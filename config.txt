@@ -1,0 +1,10 @@
+# GeoPolitical Domination config file
+# player_name: your human player name
+# default_bot_count: default number of bots to create at New Game
+# pin_x_adjust: horizontal adjustment for pin positions
+# pin_scale: scaling factor for map display
+
+player_name=Player
+default_bot_count=3
+pin_x_adjust=-25
+pin_scale=0.5

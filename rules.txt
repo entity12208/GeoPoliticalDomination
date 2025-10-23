@@ -1,0 +1,19 @@
+Setup:
+Play goes from a random player in order. Each player starts with $500. Each player selects a country on the World Map. One country only. Then, gameplay begins. Antitarctica is not part of this game.
+
+Main Game:
+On your turn, you can do one of four things, you can:
+A: Peace - You are vulnerable! However, you gain $100 per country you own at the end of your turn if you were not attacked.
+B: Expand - Choose a number of troops. Costs $100 if you cross a body of water, $200 more if you cross a major ocean. If there is nobody in the country you are going to, you can get it. Move your troops you sent into that country. If there is someone there, you must fight them. The invader rolls a d20 once, the defender rolls two d20s and uses the higher roll. Whoever rolls higher wins. If the invader wins, they take the land and kill all other troops. If they lose, the defender kills all their troops and survives. If the country is vulnerable, you kill all their troops without rolling. It costs $200 to claim land, no matter how you got it.
+C: Gather Troops - Roll a d20. The rolled number is the maximum number of troops you can purchase on this turn. A troop may be bought for $50. Once you have bought troops, you may disperse them among your claimed land at your leisure.
+D: Do Nothing - You are not vulnerable, you do not gain money. Skip your turn.
+
+If a player manages to get a continent, they get a certain amount of money: Europe, Asia - $1000. North America - $800. South America, Central America, Africa - $200. 
+
+During play, you can see three statistics about players: their troop count, their country count, and their continent count. These determine which player is doing the best. Prioritize continents over countries, and countries over troops. 
+
+There is a in-game chat, monitored by a local model. You can talk privately with a player by using /<playername> before the message. An local bot model is used for each of the bots (unless in online mode). It is also used to tell all users what happened, and to begin Chaos Events (described below).
+
+Chaos Events:
+Chaos Events are random historical events that may or may not happen during play, but significantly impact the gameplay. The local bot should decide what event happens and when, as well as what will happen because of the event. Here is one example of Chaos Events: “Liquid Gold” in the Middle East; Everyone who claims or has claimed property in the Middle East gets $1500. 
+
