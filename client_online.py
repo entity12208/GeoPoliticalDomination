@@ -19,6 +19,14 @@ from pygame import gfxdraw
 
 from firebase_sync import FirebaseController
 
+# Try to import updater (optional feature)
+try:
+    import updater
+    UPDATER_AVAILABLE = True
+except Exception as e:
+    print(f"Updater not available: {e}")
+    UPDATER_AVAILABLE = False
+
 # --- constants & paths
 BASE_DIR = os.path.dirname(__file__)
 ASSET_DIR = os.path.join(BASE_DIR, "assets")
@@ -336,17 +344,40 @@ def main():
         doc2 = dict(doc); doc2["logs"] = sanitized_logs
         remote.update_from_doc(doc2)
 
+    # Check for updates (in background, non-blocking)
+    update_info = None
+    update_check_done = False
+    
+    def check_updates_background():
+        nonlocal update_info, update_check_done
+        try:
+            if UPDATER_AVAILABLE:
+                update_info = updater.silent_check()
+            update_check_done = True
+        except Exception as e:
+            print(f"Update check failed: {e}")
+            update_check_done = True
+    
+    # Start update check in background
+    if UPDATER_AVAILABLE:
+        update_thread = threading.Thread(target=check_updates_background, daemon=True)
+        update_thread.start()
+    else:
+        update_check_done = True
+
     # UI & state
     state = "menu"   # menu | choose_start | playing
     message = ""; msg_until = 0
     current_game_id = None
     my_player_name = None
 
-    input_active = {"game_id": False, "player_name": False, "starting_country": False, "move_target": False}
-    user_inputs = {"game_id": "room1", "player_name": "Player", "starting_country": "", "move_target": ""}
+    input_active = {"game_id": False, "player_name": False, "player_password": False, "room_password": False, "starting_country": False, "move_target": False}
+    user_inputs = {"game_id": "room1", "player_name": "Player", "player_password": "", "room_password": "", "starting_country": "", "move_target": ""}
     small_input_rects = {
-        "game_id": pygame.Rect(WIDTH//2 - 260, 260, 520, 36),
-        "player_name": pygame.Rect(WIDTH//2 - 260, 320, 520, 36),
+        "game_id": pygame.Rect(WIDTH//2 - 260, 200, 520, 36),
+        "player_name": pygame.Rect(WIDTH//2 - 260, 260, 520, 36),
+        "player_password": pygame.Rect(WIDTH//2 - 260, 320, 520, 36),
+        "room_password": pygame.Rect(WIDTH//2 - 260, 380, 520, 36),
         "starting_country": pygame.Rect(WIDTH//2 - 260, 420, 520, 36),
         "move_target": pygame.Rect(WIDTH//2 - 260, MAP_H + 8 + 120, 520, 28)
     }
@@ -375,14 +406,19 @@ def main():
         message = msg; msg_until = time.time() + secs
         print("[UI]", msg)
 
-    def draw_input_box(key, label):
+    def draw_input_box(key, label, hide_password=False):
         r = small_input_rects[key]
         pygame.draw.rect(screen, (255,255,255), r); pygame.draw.rect(screen, (190,190,190), r, 2)
         txt = user_inputs.get(key, "")
-        t = font.render(txt, True, (10,10,10))
+        # Hide password fields with asterisks
+        if hide_password and txt:
+            display_txt = "*" * len(txt)
+        else:
+            display_txt = txt
+        t = font.render(display_txt, True, (10,10,10))
         screen.blit(t, (r.x+8, r.y+6))
-        label = font.render(label, True, (120,120,120))
-        screen.blit(label, (r.x, r.y - 18))
+        label_surf = font.render(label, True, (120,120,120))
+        screen.blit(label_surf, (r.x, r.y - 18))
 
     def build_minimal_countries_for_upload():
         minimal = {}
@@ -545,8 +581,10 @@ def main():
                         if not gid or not pname:
                             flash("Please provide Game ID and Player name")
                         else:
+                            player_pass = user_inputs.get("player_password", "").strip()
+                            room_pass = user_inputs.get("room_password", "").strip()
                             try:
-                                doc = fc.create_or_open_game(gid, pname)
+                                doc = fc.create_or_open_game(gid, pname, player_password=player_pass, room_password=room_pass)
                                 current_game_id = gid; my_player_name = pname
                                 if not doc.get("countries"):
                                     minimal = build_minimal_countries_for_upload()
@@ -567,8 +605,10 @@ def main():
                         if not gid or not pname:
                             flash("Please provide Game ID and Player name")
                         else:
+                            player_pass = user_inputs.get("player_password", "").strip()
+                            room_pass = user_inputs.get("room_password", "").strip()
                             try:
-                                doc = fc.create_or_open_game(gid, pname)
+                                doc = fc.create_or_open_game(gid, pname, player_password=player_pass, room_password=room_pass)
                                 current_game_id = gid; my_player_name = pname
                                 if not doc.get("countries"):
                                     minimal = build_minimal_countries_for_upload()
@@ -834,12 +874,49 @@ def main():
         # menu overlays (when in menu or choose_start)
         if state == "menu":
             title = bigfont.render("GeoPolitical Domination - Online", True, (255,255,255))
-            screen.blit(title, (WIDTH//2 - title.get_width()//2, 80))
+            screen.blit(title, (WIDTH//2 - title.get_width()//2, 60))
             draw_input_box("game_id", "Game ID:")
             draw_input_box("player_name", "Player name:")
-            create_btn = Button((WIDTH//2 - 260, 380, 240, 56), "Create & Host", bigfont)
-            join_btn = Button((WIDTH//2 + 20, 380, 240, 56), "Join Room", bigfont)
+            draw_input_box("player_password", "Player Password:", hide_password=True)
+            draw_input_box("room_password", "Room Password (optional):", hide_password=True)
+            hint = font.render("Create: new ID + optional room password. Join: ID + room password if required.", True, (180,180,180))
+            screen.blit(hint, (WIDTH//2 - hint.get_width()//2, 440))
+            create_btn = Button((WIDTH//2 - 260, 470, 240, 56), "Create & Host", bigfont)
+            join_btn = Button((WIDTH//2 + 20, 470, 240, 56), "Join Room", bigfont)
             create_btn.draw(screen); join_btn.draw(screen)
+            
+            # Update notification
+            if update_check_done and update_info and update_info.get('update_available'):
+                update_rect = pygame.Rect(WIDTH - 320, HEIGHT - 90, 310, 80)
+                pygame.draw.rect(screen, (255, 200, 100), update_rect)
+                pygame.draw.rect(screen, (200, 150, 50), update_rect, 2)
+                update_title = font.render("Update Available!", True, (20, 20, 20))
+                screen.blit(update_title, (update_rect.x + 10, update_rect.y + 8))
+                current_v = update_info.get('current', 'unknown')
+                latest_v = update_info.get('latest', 'unknown')
+                version_text = font.render(f"{current_v} -> {latest_v}", True, (20, 20, 20))
+                screen.blit(version_text, (update_rect.x + 10, update_rect.y + 28))
+                update_btn = Button((update_rect.x + 10, update_rect.y + 48, 140, 24), "Update Now", font, bg=(80, 160, 80))
+                dismiss_btn = Button((update_rect.x + 160, update_rect.y + 48, 140, 24), "Ignore", font, bg=(140, 140, 140))
+                update_btn.draw(screen)
+                dismiss_btn.draw(screen)
+                
+                # Handle update button clicks
+                for ev in pygame.event.get(pygame.MOUSEBUTTONDOWN):
+                    if ev.button == 1:
+                        if update_btn.rect.collidepoint(ev.pos):
+                            # Launch updater in separate process
+                            try:
+                                import subprocess
+                                if sys.platform == 'win32':
+                                    subprocess.Popen([sys.executable, 'updater.py'], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                                else:
+                                    subprocess.Popen([sys.executable, 'updater.py'])
+                                flash("Updater launched! Close this window to update.")
+                            except Exception as e:
+                                flash(f"Failed to launch updater: {e}")
+                        elif dismiss_btn.rect.collidepoint(ev.pos):
+                            update_info = None
 
         if state == "choose_start":
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA); overlay.fill((0,0,0,120)); screen.blit(overlay,(0,0))

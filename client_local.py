@@ -152,6 +152,8 @@ class Player:
     def __init__(self,name,is_bot=False,color=None):
         self.name=name; self.money=500; self.is_bot=is_bot; self.vulnerable=False; self.was_attacked=False
         self.owned=set(); self.color = color if color else random.choice(PALETTE)
+        self.troop_buy_limit = 20  # Random limit set each turn when gathering
+        self.last_gather_turn = 0  # Track which turn the limit was set
     def troop_count(self, countries):
         return sum(int(c.get("troops",0)) for c in countries.values() if c.get("owner")==self.name)
     def country_count(self): return len(self.owned)
@@ -785,9 +787,16 @@ def main():
                     game.log(f"{cur.name} chose PEACE")
                     end_turn_housekeeping(game, cur)
                 elif b_gather and b_gather.handle_event(ev) and not cur.is_bot:
-                    roll = random.randint(1,20)
+                    # Roll new troop buy limit if this is a new turn
+                    if cur.last_gather_turn != game.turn_number:
+                        cur.troop_buy_limit = random.randint(1, 20)
+                        cur.last_gather_turn = game.turn_number
+                        game.log(f"{cur.name} can buy up to {cur.troop_buy_limit} troops this turn (rolled d20).")
+                    
+                    max_buy_limit = cur.troop_buy_limit
                     max_afford = cur.money // TROOP_COST
-                    max_allowed = min(roll, max_afford)
+                    max_allowed = min(max_buy_limit, max_afford)
+                    
                     srect = (WIDTH//2 - 260, HEIGHT//2 - 20, 520, 36)
                     gather_slider = Slider(srect, 0, max_allowed, 0)
                     gather_confirm = Button((WIDTH//2 + 140, HEIGHT//2 + 28, 120, 36), "Confirm", font, bg=(80,200,120))
