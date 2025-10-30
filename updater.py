@@ -38,10 +38,11 @@ def save_current_version(version):
         print(f"Error saving version: {e}")
         return False
 
-def fetch_releases():
+def fetch_releases(silent=False):
     """Fetch all releases from GitHub API"""
     try:
-        print("Fetching releases from GitHub...")
+        if not silent:
+            print("Fetching releases from GitHub...")
         req = urllib.request.Request(GITHUB_API_URL)
         req.add_header('User-Agent', 'GPD-Updater/1.0')
         
@@ -50,13 +51,20 @@ def fetch_releases():
             releases = json.loads(data)
             return releases
     except urllib.error.HTTPError as e:
-        print(f"HTTP Error: {e.code} - {e.reason}")
+        if not silent:
+            print(f"HTTP Error: {e.code} - {e.reason}")
         return None
     except urllib.error.URLError as e:
-        print(f"URL Error: {e.reason}")
+        if not silent:
+            print(f"URL Error: {e.reason}")
+        return None
+    except json.JSONDecodeError as e:
+        if not silent:
+            print(f"JSON decode error: {e}")
         return None
     except Exception as e:
-        print(f"Error fetching releases: {e}")
+        if not silent:
+            print(f"Error fetching releases: {e}")
         return None
 
 def display_releases(releases):
@@ -198,10 +206,10 @@ def download_and_extract_release(release, target_dir=None):
             os.remove(temp_zip)
         return False
 
-def check_for_updates():
+def check_for_updates(silent=False):
     """Check if a newer version is available"""
     current = get_current_version()
-    releases = fetch_releases()
+    releases = fetch_releases(silent=silent)
     
     if not releases or len(releases) == 0:
         return None, current
@@ -275,19 +283,23 @@ def interactive_mode():
 
 def silent_check():
     """Silent check for updates (for integration into game client)"""
-    latest, current = check_for_updates()
-    
-    if latest:
-        latest_tag = latest.get('tag_name', 'unknown')
-        if current != latest_tag and current != 'unknown':
-            return {
-                'update_available': True,
-                'current': current,
-                'latest': latest_tag,
-                'release': latest
-            }
-    
-    return {'update_available': False, 'current': current}
+    try:
+        latest, current = check_for_updates(silent=True)
+        
+        if latest:
+            latest_tag = latest.get('tag_name', 'unknown')
+            if current != latest_tag and current != 'unknown':
+                return {
+                    'update_available': True,
+                    'current': current,
+                    'latest': latest_tag,
+                    'release': latest
+                }
+        
+        return {'update_available': False, 'current': current}
+    except Exception as e:
+        print(f"Silent check error: {e}")
+        return {'update_available': False, 'current': 'unknown', 'error': str(e)}
 
 if __name__ == "__main__":
     try:

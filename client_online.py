@@ -338,11 +338,9 @@ def main():
 
     remote = RemoteGameView()
     def on_game_update(doc):
-        sanitized_logs = []
-        for l in (doc.get("logs", []) or []):
-            sanitized_logs.append(l)
-        doc2 = dict(doc); doc2["logs"] = sanitized_logs
-        remote.update_from_doc(doc2)
+        # Simplified to directly pass the document.
+        # The remote view handles safe extraction of fields.
+        remote.update_from_doc(doc)
 
     # Check for updates (in background, non-blocking)
     update_info = None
@@ -356,12 +354,18 @@ def main():
             update_check_done = True
         except Exception as e:
             print(f"Update check failed: {e}")
+            import traceback
+            traceback.print_exc()
             update_check_done = True
     
     # Start update check in background
     if UPDATER_AVAILABLE:
-        update_thread = threading.Thread(target=check_updates_background, daemon=True)
-        update_thread.start()
+        try:
+            update_thread = threading.Thread(target=check_updates_background, daemon=True)
+            update_thread.start()
+        except Exception as e:
+            print(f"Failed to start update thread: {e}")
+            update_check_done = True
     else:
         update_check_done = True
 
@@ -371,13 +375,19 @@ def main():
     current_game_id = None
     my_player_name = None
 
+    network_thread = None
+    network_result = None
+    network_loading = False
+    game_id_in_progress = None
+    player_name_in_progress = None
+
     input_active = {"game_id": False, "player_name": False, "player_password": False, "room_password": False, "starting_country": False, "move_target": False}
     user_inputs = {"game_id": "room1", "player_name": "Player", "player_password": "", "room_password": "", "starting_country": "", "move_target": ""}
     small_input_rects = {
-        "game_id": pygame.Rect(WIDTH//2 - 260, 200, 520, 36),
-        "player_name": pygame.Rect(WIDTH//2 - 260, 260, 520, 36),
-        "player_password": pygame.Rect(WIDTH//2 - 260, 320, 520, 36),
-        "room_password": pygame.Rect(WIDTH//2 - 260, 380, 520, 36),
+        "game_id": pygame.Rect(WIDTH//2 - 260, 160, 520, 36),
+        "player_name": pygame.Rect(WIDTH//2 - 260, 210, 520, 36),
+        "player_password": pygame.Rect(WIDTH//2 - 260, 260, 520, 36),
+        "room_password": pygame.Rect(WIDTH//2 - 260, 310, 520, 36),
         "starting_country": pygame.Rect(WIDTH//2 - 260, 420, 520, 36),
         "move_target": pygame.Rect(WIDTH//2 - 260, MAP_H + 8 + 120, 520, 28)
     }
@@ -460,6 +470,29 @@ def main():
 
     running = True
     while running:
+        if network_loading and network_thread and not network_thread.is_alive():
+            network_loading = False
+            if isinstance(network_result, Exception):
+                flash(f"Failed: {network_result}")
+            elif network_result:
+                doc = network_result
+                current_game_id = game_id_in_progress
+                my_player_name = player_name_in_progress
+                if not doc.get("countries"):
+                    minimal = build_minimal_countries_for_upload()
+                    fc.upload_initial_countries(current_game_id, minimal)
+                fc.listen_to_game(current_game_id, on_game_update)
+                has_country = False
+                for k,v in (doc.get("countries") or {}).items():
+                    if v.get("owner") == my_player_name:
+                        has_country = True; break
+                if has_country:
+                    state = "playing"; flash(f"Joined room '{current_game_id}' as {my_player_name}")
+                else:
+                    state = "choose_start"; flash("Type the exact name of the starting country to claim it.")
+            else:
+                flash("Failed to create or join game.")
+
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
@@ -573,57 +606,49 @@ def main():
             if state == "menu":
                 if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                     mx,my = ev.pos
-                    # create & join handled via buttons drawn below (detect click on rectangles)
-                    create_rect = pygame.Rect(WIDTH//2 - 260, 380, 240, 56)
-                    join_rect = pygame.Rect(WIDTH//2 + 20, 380, 240, 56)
-                    if create_rect.collidepoint((mx,my)):
+                    create_rect = pygame.Rect(WIDTH//2 - 260, 400, 240, 56)
+                    join_rect = pygame.Rect(WIDTH//2 + 20, 400, 240, 56)
+                    if create_rect.collidepoint((mx,my)) and not network_loading:
                         gid = user_inputs["game_id"].strip(); pname = user_inputs["player_name"].strip()
                         if not gid or not pname:
                             flash("Please provide Game ID and Player name")
                         else:
+                            network_loading = True
+                            game_id_in_progress = gid
+                            player_name_in_progress = pname
                             player_pass = user_inputs.get("player_password", "").strip()
                             room_pass = user_inputs.get("room_password", "").strip()
-                            try:
-                                doc = fc.create_or_open_game(gid, pname, player_password=player_pass, room_password=room_pass)
-                                current_game_id = gid; my_player_name = pname
-                                if not doc.get("countries"):
-                                    minimal = build_minimal_countries_for_upload()
-                                    fc.upload_initial_countries(gid, minimal)
-                                fc.listen_to_game(gid, on_game_update)
-                                has_country = False
-                                for k,v in (doc.get("countries") or {}).items():
-                                    if v.get("owner") == pname:
-                                        has_country = True; break
-                                if has_country:
-                                    state = "playing"; flash(f"Created and joined room '{gid}' as {pname}")
-                                else:
-                                    state = "choose_start"; flash("Type the exact name of the starting country to claim it.")
-                            except Exception as e:
-                                flash(f"Create failed: {e}")
-                    elif join_rect.collidepoint((mx,my)):
+                            
+                            def worker():
+                                nonlocal network_result
+                                try:
+                                    network_result = fc.create_or_open_game(game_id_in_progress, player_name_in_progress, player_password=player_pass, room_password=room_pass)
+                                except Exception as e:
+                                    network_result = e
+                            
+                            network_thread = threading.Thread(target=worker, daemon=True)
+                            network_thread.start()
+
+                    elif join_rect.collidepoint((mx,my)) and not network_loading:
                         gid = user_inputs["game_id"].strip(); pname = user_inputs["player_name"].strip()
                         if not gid or not pname:
                             flash("Please provide Game ID and Player name")
                         else:
+                            network_loading = True
+                            game_id_in_progress = gid
+                            player_name_in_progress = pname
                             player_pass = user_inputs.get("player_password", "").strip()
                             room_pass = user_inputs.get("room_password", "").strip()
-                            try:
-                                doc = fc.create_or_open_game(gid, pname, player_password=player_pass, room_password=room_pass)
-                                current_game_id = gid; my_player_name = pname
-                                if not doc.get("countries"):
-                                    minimal = build_minimal_countries_for_upload()
-                                    fc.upload_initial_countries(gid, minimal)
-                                fc.listen_to_game(gid, on_game_update)
-                                has_country = False
-                                for k,v in (doc.get("countries") or {}).items():
-                                    if v.get("owner") == pname:
-                                        has_country = True; break
-                                if has_country:
-                                    state = "playing"; flash(f"Joined room '{gid}' as {pname}")
-                                else:
-                                    state = "choose_start"; flash("Type the exact name of the starting country to claim it.")
-                            except Exception as e:
-                                flash(f"Join failed: {e}")
+                            
+                            def worker():
+                                nonlocal network_result
+                                try:
+                                    network_result = fc.create_or_open_game(game_id_in_progress, player_name_in_progress, player_password=player_pass, room_password=room_pass)
+                                except Exception as e:
+                                    network_result = e
+                            
+                            network_thread = threading.Thread(target=worker, daemon=True)
+                            network_thread.start()
 
             elif state == "choose_start":
                 if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
@@ -880,10 +905,17 @@ def main():
             draw_input_box("player_password", "Player Password:", hide_password=True)
             draw_input_box("room_password", "Room Password (optional):", hide_password=True)
             hint = font.render("Create: new ID + optional room password. Join: ID + room password if required.", True, (180,180,180))
-            screen.blit(hint, (WIDTH//2 - hint.get_width()//2, 440))
-            create_btn = Button((WIDTH//2 - 260, 470, 240, 56), "Create & Host", bigfont)
-            join_btn = Button((WIDTH//2 + 20, 470, 240, 56), "Join Room", bigfont)
+            screen.blit(hint, (WIDTH//2 - hint.get_width()//2, 360))
+            create_btn = Button((WIDTH//2 - 260, 400, 240, 56), "Create & Host", bigfont)
+            join_btn = Button((WIDTH//2 + 20, 400, 240, 56), "Join Room", bigfont)
             create_btn.draw(screen); join_btn.draw(screen)
+            
+            if network_loading:
+                overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                overlay.fill((0,0,0,160))
+                screen.blit(overlay, (0,0))
+                loading_text = bigfont.render("Connecting...", True, (255,255,255))
+                screen.blit(loading_text, (WIDTH//2 - loading_text.get_width()//2, HEIGHT//2 - loading_text.get_height()//2))
             
             # Update notification
             if update_check_done and update_info and update_info.get('update_available'):
