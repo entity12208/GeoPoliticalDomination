@@ -1,16 +1,9 @@
 # heuristic_bot.py
 """
-Heuristic bot for GPD (client snapshot interface).
+Enhanced heuristic bot for GPD (client snapshot interface) with multiple playstyles.
 
-Features:
-- Expansion is ALWAYS prioritized. The bot will never skip expansion if a legal move exists.
-- The bot will NEVER attempt to expand into its own country (to avoid civil war).
-- Prioritized expansion: expand from any country with >3 armies, sending 2 armies to the best adjacent (unowned preferred, then weakest enemy, lowest crossing cost).
-- If no prioritized expansion is possible, scans for any other legal expansion (unowned or enemy) and will always expand if possible.
-- Only gathers troops when absolutely no expansion is possible.
-- PEACE is chosen only if neither expansion nor gathering is viable.
-- Money-aware: attempts to avoid spending below $800 unless expansion is possible and affordable.
-- Safe tuple sorting (never compares dicts).
+This module now imports from bot_playstyles.py for more sophisticated AI.
+Falls back to basic heuristics if bot_playstyles is unavailable.
 
 Interface:
 decide(game_state, player_name) -> ("PEACE"/"GATHER"/"EXPAND", params)
@@ -20,6 +13,14 @@ decide(game_state, player_name) -> ("PEACE"/"GATHER"/"EXPAND", params)
 import random
 import math
 from collections import defaultdict
+
+# Try to import enhanced bot playstyles
+try:
+    import bot_playstyles
+    HAS_ENHANCED_BOTS = True
+except ImportError:
+    HAS_ENHANCED_BOTS = False
+    print("Warning: bot_playstyles not available, using basic heuristics")
 
 CLAIM_COST = 200
 TROOP_COST = 50
@@ -177,7 +178,16 @@ def find_any_expansion(gs, me_name, my_pins, my_money):
     return None
 
 def decide(game_state, player_name):
+    """
+    Main decision function. Uses enhanced playstyles if available,
+    otherwise falls back to basic heuristics.
+    """
     try:
+        # Use enhanced bot playstyles if available
+        if HAS_ENHANCED_BOTS:
+            return bot_playstyles.decide(game_state, player_name)
+        
+        # Fallback to basic heuristics
         gs = game_state or {}
         me = find_player(gs, player_name)
         if not me:

@@ -83,45 +83,89 @@ class FirebaseController:
                 return "#" + s[:6].upper()
         return random.choice(HEX_PALETTE)
 
-    def create_or_open_game(self, game_id, player_name, color=None, bot_count=0):
+    def create_or_open_game(self, game_id, player_name, player_password="", color=None, bot_count=0, room_password=""):
+        """
+        Create or join a game room with optional password protection.
+        
+        Args:
+            game_id: Unique room ID
+            player_name: Player's username
+            player_password: Player's account password (hashed before storage)
+            color: Preferred color (optional)
+            bot_count: Number of bots (only when creating)
+            room_password: Room password (only when creating, optional)
+        """
         ref = self.get_game_ref(game_id)
         try:
             snap = ref.get()
             if not snap.exists:
+                # Creating new game - check if room ID is already taken
+                # (This is the initial check; race conditions handled by Firestore)
                 chosen_color = self._choose_color(color)
+                import hashlib
+                player_pass_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
+                room_pass_hash = hashlib.sha256(room_password.encode()).hexdigest() if room_password else ""
+                
                 doc = {
                     "players": [
                         {"name": player_name, "is_bot": False, "color": chosen_color,
-                         "money": 500, "vulnerable": False, "was_attacked": False}
+                         "money": 500, "vulnerable": False, "was_attacked": False,
+                         "password_hash": player_pass_hash, "troop_buy_limit": 20}
                     ],
                     "countries": {},
                     "turn_idx": 0,
                     "turn_number": 1,
                     "logs": [_shortlog(f"{player_name} created the game.")],
                     "status": "waiting",
-                    "created_at": firestore.SERVER_TIMESTAMP
+                    "created_at": firestore.SERVER_TIMESTAMP,
+                    "room_password_hash": room_pass_hash,
+                    "has_password": bool(room_password)
                 }
                 ref.set(doc)
                 return doc
             else:
+                # Joining existing game
                 data = snap.to_dict() or {}
-                if not any(p.get("name") == player_name for p in data.get("players", [])):
-                    transaction = self.db.transaction()
+                
+                # Check room password if required
+                if data.get("has_password", False):
+                    import hashlib
+                    provided_hash = hashlib.sha256(room_password.encode()).hexdigest() if room_password else ""
+                    stored_hash = data.get("room_password_hash", "")
+                    if provided_hash != stored_hash:
+                        raise Exception("Incorrect room password")
+                
+                # Check if player name already exists
+                existing_player = next((p for p in data.get("players", []) if p.get("name") == player_name), None)
+                if existing_player:
+                    # Verify player password
+                    import hashlib
+                    provided_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
+                    stored_hash = existing_player.get("password_hash", "")
+                    if provided_hash != stored_hash:
+                        raise Exception("Incorrect player password")
+                    return data
+                
+                # Add new player
+                transaction = self.db.transaction()
 
-                    @firestore.transactional
-                    def add_player(tx):
-                        s = ref.get(transaction=tx)
-                        d = s.to_dict() or {}
-                        players = d.get("players", [])
-                        if not any(p.get("name") == player_name for p in players):
-                            new_color = self._choose_color(color)
-                            players.append({"name": player_name, "is_bot": False, "color": new_color,
-                                            "money": 500, "vulnerable": False, "was_attacked": False})
-                            tx.update(ref, {"players": players})
+                @firestore.transactional
+                def add_player(tx):
+                    s = ref.get(transaction=tx)
+                    d = s.to_dict() or {}
+                    players = d.get("players", [])
+                    if not any(p.get("name") == player_name for p in players):
+                        import hashlib
+                        player_pass_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
+                        new_color = self._choose_color(color)
+                        players.append({"name": player_name, "is_bot": False, "color": new_color,
+                                        "money": 500, "vulnerable": False, "was_attacked": False,
+                                        "password_hash": player_pass_hash, "troop_buy_limit": 20})
+                        tx.update(ref, {"players": players})
 
-                    add_player(transaction)
-                    snap = ref.get()
-                    data = snap.to_dict() or {}
+                add_player(transaction)
+                snap = ref.get()
+                data = snap.to_dict() or {}
                 return data
         except Exception:
             raise
@@ -272,6 +316,23 @@ class FirebaseController:
 
             if action_type == "GATHER":
                 buy = int(action_params.get("buy", 0))
+                
+                # Check if this is a new turn - if so, roll new troop buy limit
+                last_turn = cur_player.get("last_gather_turn", 0)
+                if last_turn != int(g.get("turn_number", 1)):
+                    # New turn - roll for troop buy limit (1-20)
+                    import random
+                    cur_player["troop_buy_limit"] = random.randint(1, 20)
+                    cur_player["last_gather_turn"] = int(g.get("turn_number", 1))
+                
+                # Enforce buy limit
+                buy_limit = cur_player.get("troop_buy_limit", 20)
+                if buy > buy_limit:
+                    logs.append(_shortlog(f"{player_name} attempted to buy {buy} troops but limit is {buy_limit} this turn"))
+                    tx.update(ref, {"logs": logs})
+                    advance()
+                    return False
+                
                 cost = buy * TROOP_COST
                 if cur_player.get("money", 0) < cost:
                     logs.append(_shortlog(f"{player_name} attempted to buy {buy} troops but couldn't afford ${cost}"))
@@ -288,7 +349,7 @@ class FirebaseController:
                         c["troops"] = int(c.get("troops", 0) or 0) + 1
                         countries[cid] = c
                         i += 1; buy -= 1
-                logs.append(_shortlog(f"{player_name} bought troops for ${cost}"))
+                logs.append(_shortlog(f"{player_name} bought {int(action_params.get('buy', 0))} troops for ${cost} (limit was {buy_limit})"))
                 players[turn_idx] = cur_player
                 tx.update(ref, {"players": players, "countries": countries, "logs": logs})
                 advance()

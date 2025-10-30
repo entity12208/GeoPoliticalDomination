@@ -162,7 +162,7 @@ If you see any error messages, try:
 4. Running the activate command for your computer
 5. Running the game again
 
-Need more help? Check the original `README.md` for technical details or contact the game's maintainers.
+
 
 ## Playing Online
 
