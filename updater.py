@@ -38,11 +38,10 @@ def save_current_version(version):
         print(f"Error saving version: {e}")
         return False
 
-def fetch_releases(silent=False):
+def fetch_releases():
     """Fetch all releases from GitHub API"""
     try:
-        if not silent:
-            print("Fetching releases from GitHub...")
+        print("Fetching releases from GitHub...")
         req = urllib.request.Request(GITHUB_API_URL)
         req.add_header('User-Agent', 'GPD-Updater/1.0')
         
@@ -51,20 +50,13 @@ def fetch_releases(silent=False):
             releases = json.loads(data)
             return releases
     except urllib.error.HTTPError as e:
-        if not silent:
-            print(f"HTTP Error: {e.code} - {e.reason}")
+        print(f"HTTP Error: {e.code} - {e.reason}")
         return None
     except urllib.error.URLError as e:
-        if not silent:
-            print(f"URL Error: {e.reason}")
-        return None
-    except json.JSONDecodeError as e:
-        if not silent:
-            print(f"JSON decode error: {e}")
+        print(f"URL Error: {e.reason}")
         return None
     except Exception as e:
-        if not silent:
-            print(f"Error fetching releases: {e}")
+        print(f"Error fetching releases: {e}")
         return None
 
 def display_releases(releases):
@@ -159,6 +151,27 @@ def download_and_extract_release(release, target_dir=None):
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(backup_dir, fname))
                 print(f"Backed up: {fname}")
+
+        # Clean the directory before extraction
+        print("Cleaning old files...")
+        files_to_keep = [
+            os.path.basename(__file__),  # updater.py
+            os.path.basename(backup_dir),
+            os.path.basename(temp_zip),
+            '.git'
+        ]
+
+        for item in os.listdir(target_dir):
+            if item not in files_to_keep:
+                item_path = os.path.join(target_dir, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                    print(f"Removed: {item}")
+                except Exception as e:
+                    print(f"Could not remove {item}: {e}")
         
         # Extract zip
         with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
@@ -170,6 +183,10 @@ def download_and_extract_release(release, target_dir=None):
                 root_folder = namelist[0].split('/')[0] + '/'
             
             for member in namelist:
+                # Do not overwrite the updater script
+                if os.path.basename(member) == os.path.basename(__file__):
+                    continue
+
                 # Skip the root folder in path
                 if root_folder and member.startswith(root_folder):
                     target_path = os.path.join(target_dir, member[len(root_folder):])
@@ -206,10 +223,10 @@ def download_and_extract_release(release, target_dir=None):
             os.remove(temp_zip)
         return False
 
-def check_for_updates(silent=False):
+def check_for_updates():
     """Check if a newer version is available"""
     current = get_current_version()
-    releases = fetch_releases(silent=silent)
+    releases = fetch_releases()
     
     if not releases or len(releases) == 0:
         return None, current
@@ -283,23 +300,19 @@ def interactive_mode():
 
 def silent_check():
     """Silent check for updates (for integration into game client)"""
-    try:
-        latest, current = check_for_updates(silent=True)
-        
-        if latest:
-            latest_tag = latest.get('tag_name', 'unknown')
-            if current != latest_tag and current != 'unknown':
-                return {
-                    'update_available': True,
-                    'current': current,
-                    'latest': latest_tag,
-                    'release': latest
-                }
-        
-        return {'update_available': False, 'current': current}
-    except Exception as e:
-        print(f"Silent check error: {e}")
-        return {'update_available': False, 'current': 'unknown', 'error': str(e)}
+    latest, current = check_for_updates()
+    
+    if latest:
+        latest_tag = latest.get('tag_name', 'unknown')
+        if current != latest_tag and current != 'unknown':
+            return {
+                'update_available': True,
+                'current': current,
+                'latest': latest_tag,
+                'release': latest
+            }
+    
+    return {'update_available': False, 'current': current}
 
 if __name__ == "__main__":
     try:
