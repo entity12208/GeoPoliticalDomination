@@ -97,14 +97,15 @@ class FirebaseController:
         """
         ref = self.get_game_ref(game_id)
         try:
-            snap = ref.get()
+            snap = ref.get(timeout=10)
             if not snap.exists:
                 # Creating new game - check if room ID is already taken
                 # (This is the initial check; race conditions handled by Firestore)
                 chosen_color = self._choose_color(color)
                 import hashlib
-                player_pass_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
-                room_pass_hash = hashlib.sha256(room_password.encode()).hexdigest() if room_password else ""
+                # Always hash, even blank passwords - this ensures consistency
+                player_pass_hash = hashlib.sha256((player_password or "").encode()).hexdigest()
+                room_pass_hash = hashlib.sha256((room_password or "").encode()).hexdigest()
                 
                 doc = {
                     "players": [
@@ -121,17 +122,22 @@ class FirebaseController:
                     "room_password_hash": room_pass_hash,
                     "has_password": bool(room_password)
                 }
-                ref.set(doc)
+                print(f"[DEBUG] Creating new room: {game_id}, has_password={bool(room_password)}")
+                ref.set(doc, timeout=10)
+                print(f"[DEBUG] Room created successfully")
                 return doc
             else:
                 # Joining existing game
                 data = snap.to_dict() or {}
+                print(f"[DEBUG] Joining existing room: {game_id}, has_password={data.get('has_password', False)}")
                 
                 # Check room password if required
                 if data.get("has_password", False):
                     import hashlib
-                    provided_hash = hashlib.sha256(room_password.encode()).hexdigest() if room_password else ""
-                    stored_hash = data.get("room_password_hash", "")
+                    # Always hash, even blank passwords
+                    provided_hash = hashlib.sha256((room_password or "").encode()).hexdigest()
+                    stored_hash = data.get("room_password_hash") or ""  # Handle None or missing
+                    print(f"[DEBUG] Checking room password: provided={provided_hash[:8]}..., stored={stored_hash[:8] if stored_hash else 'None'}...")
                     if provided_hash != stored_hash:
                         raise Exception("Incorrect room password")
                 
@@ -140,10 +146,13 @@ class FirebaseController:
                 if existing_player:
                     # Verify player password
                     import hashlib
-                    provided_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
-                    stored_hash = existing_player.get("password_hash", "")
+                    # Always hash, even blank passwords
+                    provided_hash = hashlib.sha256((player_password or "").encode()).hexdigest()
+                    stored_hash = existing_player.get("password_hash") or ""  # Handle None or missing
+                    print(f"[DEBUG] Checking player password for {player_name}: provided={provided_hash[:8]}..., stored={stored_hash[:8] if stored_hash else 'None'}...")
                     if provided_hash != stored_hash:
                         raise Exception("Incorrect player password")
+                    print(f"[DEBUG] Player {player_name} rejoined successfully")
                     return data
                 
                 # Add new player
@@ -151,23 +160,29 @@ class FirebaseController:
 
                 @firestore.transactional
                 def add_player(tx):
-                    s = ref.get(transaction=tx)
+                    s = ref.get(transaction=tx, timeout=10)
                     d = s.to_dict() or {}
                     players = d.get("players", [])
                     if not any(p.get("name") == player_name for p in players):
                         import hashlib
-                        player_pass_hash = hashlib.sha256(player_password.encode()).hexdigest() if player_password else ""
+                        # Always hash, even blank passwords
+                        player_pass_hash = hashlib.sha256((player_password or "").encode()).hexdigest()
                         new_color = self._choose_color(color)
                         players.append({"name": player_name, "is_bot": False, "color": new_color,
                                         "money": 500, "vulnerable": False, "was_attacked": False,
                                         "password_hash": player_pass_hash, "troop_buy_limit": 20})
                         tx.update(ref, {"players": players})
 
+                print(f"[DEBUG] Adding new player {player_name} to existing room")
                 add_player(transaction)
-                snap = ref.get()
+                snap = ref.get(timeout=10)
                 data = snap.to_dict() or {}
+                print(f"[DEBUG] Player {player_name} added successfully")
                 return data
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] create_or_open_game failed: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def upload_initial_countries(self, game_id, countries_min):
@@ -186,15 +201,17 @@ class FirebaseController:
             self._listener = None
 
         def _on_snapshot(doc_snapshot, changes, read_time):
-            if not doc_snapshot:
+            if not doc_snapshot or len(doc_snapshot) == 0:
                 return
             doc = doc_snapshot[0].to_dict()
+            if not doc:
+                return
             with self._lock:
                 self.local_game = doc
             try:
                 on_update(doc)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error in on_update callback: {e}")
 
         self._listener = ref.on_snapshot(_on_snapshot)
 
