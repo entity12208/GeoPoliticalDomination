@@ -11,6 +11,7 @@ import sys
 import json
 import math
 import random
+import subprocess
 import threading
 import time
 from collections import defaultdict
@@ -380,6 +381,10 @@ def main():
     network_loading = False
     game_id_in_progress = None
     player_name_in_progress = None
+    
+    # Update notification buttons
+    update_btn = None
+    dismiss_btn = None
 
     input_active = {"game_id": False, "player_name": False, "player_password": False, "room_password": False, "starting_country": False, "move_target": False}
     user_inputs = {"game_id": "room1", "player_name": "Player", "player_password": "", "room_password": "", "starting_country": "", "move_target": ""}
@@ -496,6 +501,13 @@ def main():
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
+            
+            # Handle hover effects for update buttons
+            if ev.type == pygame.MOUSEMOTION:
+                if update_btn:
+                    update_btn.handle_event(ev)
+                if dismiss_btn:
+                    dismiss_btn.handle_event(ev)
 
             # global keyboard: handle full-screen / escape / centralized typing
             if ev.type == pygame.KEYDOWN:
@@ -649,6 +661,23 @@ def main():
                             
                             network_thread = threading.Thread(target=worker, daemon=True)
                             network_thread.start()
+                    
+                    # Handle update notification buttons (visible in menu state)
+                    if update_btn and update_btn.rect.collidepoint((mx, my)):
+                        # Launch updater in separate process
+                        try:
+                            updater_path = os.path.join(BASE_DIR, 'updater.py')
+                            if sys.platform == 'win32':
+                                subprocess.Popen([sys.executable, updater_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                            else:
+                                subprocess.Popen([sys.executable, updater_path])
+                            flash("Updater launched! Close this window to update.")
+                        except Exception as e:
+                            flash(f"Failed to launch updater: {e}")
+                    elif dismiss_btn and dismiss_btn.rect.collidepoint((mx, my)):
+                        update_info = None
+                        update_btn = None
+                        dismiss_btn = None
 
             elif state == "choose_start":
                 if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
@@ -928,27 +957,15 @@ def main():
                 latest_v = update_info.get('latest', 'unknown')
                 version_text = font.render(f"{current_v} -> {latest_v}", True, (20, 20, 20))
                 screen.blit(version_text, (update_rect.x + 10, update_rect.y + 28))
-                update_btn = Button((update_rect.x + 10, update_rect.y + 48, 140, 24), "Update Now", font, bg=(80, 160, 80))
-                dismiss_btn = Button((update_rect.x + 160, update_rect.y + 48, 140, 24), "Ignore", font, bg=(140, 140, 140))
+                
+                # Create buttons if they don't exist
+                if update_btn is None:
+                    update_btn = Button((update_rect.x + 10, update_rect.y + 48, 140, 24), "Update Now", font, bg=(80, 160, 80))
+                if dismiss_btn is None:
+                    dismiss_btn = Button((update_rect.x + 160, update_rect.y + 48, 140, 24), "Ignore", font, bg=(140, 140, 140))
+                
                 update_btn.draw(screen)
                 dismiss_btn.draw(screen)
-                
-                # Handle update button clicks
-                for ev in pygame.event.get(pygame.MOUSEBUTTONDOWN):
-                    if ev.button == 1:
-                        if update_btn.rect.collidepoint(ev.pos):
-                            # Launch updater in separate process
-                            try:
-                                import subprocess
-                                if sys.platform == 'win32':
-                                    subprocess.Popen([sys.executable, 'updater.py'], creationflags=subprocess.CREATE_NEW_CONSOLE)
-                                else:
-                                    subprocess.Popen([sys.executable, 'updater.py'])
-                                flash("Updater launched! Close this window to update.")
-                            except Exception as e:
-                                flash(f"Failed to launch updater: {e}")
-                        elif dismiss_btn.rect.collidepoint(ev.pos):
-                            update_info = None
 
         if state == "choose_start":
             overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA); overlay.fill((0,0,0,120)); screen.blit(overlay,(0,0))
