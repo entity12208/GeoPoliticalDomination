@@ -314,6 +314,138 @@ def silent_check():
     
     return {'update_available': False, 'current': current}
 
+def download_update_with_callback(release, progress_cb=None, target_dir=None):
+    """
+    Download and install an update, calling progress_cb(phase, percent, message)
+    at each step. Returns True on success.
+
+    phase: "download" | "extract" | "done" | "error"
+    percent: 0.0-1.0
+    """
+    if target_dir is None:
+        target_dir = BASE_DIR
+
+    assets = release.get('assets', [])
+    zipball_url = release.get('zipball_url')
+    tag = release.get('tag_name', 'unknown')
+
+    download_url = None
+    for asset in assets:
+        if asset['name'].endswith('.zip'):
+            download_url = asset['browser_download_url']
+            break
+    if not download_url:
+        download_url = zipball_url
+    if not download_url:
+        if progress_cb:
+            progress_cb("error", 0, "No download URL found")
+        return False
+
+    temp_zip = os.path.join(target_dir, "temp_update.zip")
+
+    try:
+        # Download
+        if progress_cb:
+            progress_cb("download", 0, f"Downloading {tag}...")
+        req = urllib.request.Request(download_url)
+        req.add_header('User-Agent', 'GPD-Updater/2.0')
+        with urllib.request.urlopen(req, timeout=60) as response:
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            with open(temp_zip, 'wb') as f:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_cb and total_size > 0:
+                        progress_cb("download", downloaded / total_size,
+                                    f"Downloading... {downloaded // 1024}KB / {total_size // 1024}KB")
+
+        # Extract
+        if progress_cb:
+            progress_cb("extract", 0, "Backing up config...")
+
+        backup_dir = os.path.join(target_dir, "backup_before_update")
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir)
+        os.makedirs(backup_dir, exist_ok=True)
+
+        important_files = ['config.txt', 'version.txt']
+        for fname in important_files:
+            src = os.path.join(target_dir, fname)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(backup_dir, fname))
+
+        if progress_cb:
+            progress_cb("extract", 0.2, "Cleaning old files...")
+
+        files_to_keep = [
+            os.path.basename(__file__),
+            os.path.basename(backup_dir),
+            os.path.basename(temp_zip),
+            '.git', '.venv', 'venv', '__pycache__',
+        ]
+        for item in os.listdir(target_dir):
+            if item not in files_to_keep:
+                item_path = os.path.join(target_dir, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                except Exception:
+                    pass
+
+        if progress_cb:
+            progress_cb("extract", 0.5, "Extracting files...")
+
+        with zipfile.ZipFile(temp_zip, 'r') as zip_ref:
+            namelist = zip_ref.namelist()
+            root_folder = namelist[0].split('/')[0] + '/' if namelist else None
+            total = len(namelist)
+            for idx, member in enumerate(namelist):
+                if os.path.basename(member) == os.path.basename(__file__):
+                    continue
+                if root_folder and member.startswith(root_folder):
+                    target_path = os.path.join(target_dir, member[len(root_folder):])
+                else:
+                    target_path = os.path.join(target_dir, member)
+                if member.endswith('/'):
+                    os.makedirs(target_path, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with zip_ref.open(member) as source, open(target_path, 'wb') as target:
+                        shutil.copyfileobj(source, target)
+                if progress_cb and total > 0:
+                    progress_cb("extract", 0.5 + 0.4 * (idx + 1) / total,
+                                f"Extracting... {idx + 1}/{total}")
+
+        # Restore backups
+        for fname in important_files:
+            backup_file = os.path.join(backup_dir, fname)
+            if os.path.exists(backup_file):
+                shutil.copy2(backup_file, os.path.join(target_dir, fname))
+
+        os.remove(temp_zip)
+        save_current_version(tag)
+
+        if progress_cb:
+            progress_cb("done", 1.0, f"Updated to {tag}! Restarting...")
+        return True
+
+    except Exception as e:
+        if progress_cb:
+            progress_cb("error", 0, f"Update failed: {e}")
+        if os.path.exists(temp_zip):
+            try:
+                os.remove(temp_zip)
+            except Exception:
+                pass
+        return False
+
+
 if __name__ == "__main__":
     try:
         interactive_mode()
