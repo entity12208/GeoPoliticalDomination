@@ -274,45 +274,71 @@ def draw_rounded_rect(surface, rect, color, radius=10, border=0, border_color=No
         pygame.draw.rect(surface, color, (x, y, w, h), border_radius=radius)
 
 class Button:
-    """Cached button with hover highlighting."""
+    """Animated button with smooth hover scale, glow, and click press."""
     def __init__(self, rect, text, font, bg=(55, 120, 220), fg=(255, 255, 255)):
         self.rect = pygame.Rect(rect)
         self.text = text; self.font = font; self.bg = bg; self.fg = fg
-        self.hover = False; self._cache = None; self._cache_hover = None
-
-    def _build_cache(self, hover):
-        r = self.rect; col = _lighten(self.bg, 20) if hover else self.bg
-        pad = max(4, r.h // 10)
-        br = max(6, r.h // 4)
-        surf = pygame.Surface((r.w + pad*2, r.h + pad*2), pygame.SRCALPHA)
-        # shadow
-        pygame.draw.rect(surf, (0, 0, 0, 40), (pad, pad+1, r.w, r.h), border_radius=br)
-        # bg
-        pygame.draw.rect(surf, col, (pad//2, pad//2, r.w, r.h), border_radius=br)
-        # top highlight
-        hl = pygame.Surface((r.w - pad, max(1, r.h // 3)), pygame.SRCALPHA)
-        hl.fill((*_lighten(col, 40), 50))
-        surf.blit(hl, (pad, pad//2 + 1))
-        # text
-        t = cached_render(self.font, self.text, self.fg)
-        surf.blit(t, (pad//2 + r.w // 2 - t.get_width() // 2, pad//2 + r.h // 2 - t.get_height() // 2))
-        return surf
+        self.hover = False
+        self._hover_t = 0.0      # 0=normal, 1=fully hovered (animated)
+        self._press_t = 0.0      # press animation countdown
+        self._last_time = time.time()
 
     def draw(self, surf):
-        pad = max(4, self.rect.h // 10)
-        if self.hover:
-            if self._cache_hover is None:
-                self._cache_hover = self._build_cache(True)
-            surf.blit(self._cache_hover, (self.rect.x - pad//2, self.rect.y - pad//2))
-        else:
-            if self._cache is None:
-                self._cache = self._build_cache(False)
-            surf.blit(self._cache, (self.rect.x - pad//2, self.rect.y - pad//2))
+        now = time.time()
+        dt = min(now - self._last_time, 0.05)
+        self._last_time = now
+
+        # Animate hover (smooth lerp)
+        target = 1.0 if self.hover else 0.0
+        self._hover_t += (target - self._hover_t) * min(1.0, dt * 12)
+        ht = self._hover_t
+        # Press animation decay
+        if self._press_t > 0:
+            self._press_t = max(0, self._press_t - dt * 6)
+        pt = self._press_t
+
+        r = self.rect
+        br = max(6, r.h // 4)
+        pad = max(4, r.h // 10)
+
+        # Scale effect: grow slightly on hover, shrink on press
+        scale_offset = int(3 * U * ht) - int(4 * U * pt)
+        dx = r.x - scale_offset
+        dy = r.y - scale_offset
+        dw = r.w + scale_offset * 2
+        dh = r.h + scale_offset * 2
+
+        # Shadow (bigger on hover)
+        shadow_off = pad + int(2 * U * ht)
+        shadow_alpha = 30 + int(30 * ht)
+        pygame.draw.rect(surf, (0, 0, 0, shadow_alpha),
+                         (dx + shadow_off//2, dy + shadow_off//2 + U, dw, dh), border_radius=br)
+
+        # Background color interpolation
+        col = tuple(int(self.bg[i] + (min(255, self.bg[i] + 30) - self.bg[i]) * ht) for i in range(3))
+        pygame.draw.rect(surf, col, (dx, dy, dw, dh), border_radius=br)
+
+        # Top highlight (more visible on hover)
+        hl_alpha = 40 + int(30 * ht)
+        hl = pygame.Surface((dw - pad, max(1, dh // 3)), pygame.SRCALPHA)
+        hl.fill((*_lighten(col, 40), hl_alpha))
+        surf.blit(hl, (dx + pad//2, dy + 1))
+
+        # Hover glow border
+        if ht > 0.05:
+            glow_alpha = int(80 * ht)
+            pygame.draw.rect(surf, (*_lighten(col, 60), glow_alpha),
+                             (dx - 1, dy - 1, dw + 2, dh + 2), max(1, int(2*U*ht)), border_radius=br)
+
+        # Text
+        t = cached_render(self.font, self.text, self.fg)
+        surf.blit(t, (dx + dw // 2 - t.get_width() // 2, dy + dh // 2 - t.get_height() // 2))
 
     def handle_event(self, ev):
         if ev.type == pygame.MOUSEMOTION:
             self.hover = self.rect.collidepoint(ev.pos)
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1 and self.rect.collidepoint(ev.pos):
+            self._press_t = 1.0
             return True
         return False
 
@@ -610,10 +636,45 @@ def get_player_color_rgb(player_name, snapshot_players):
 # main()
 # ============================================================
 
+def _web_keymap(wi):
+    """Translate browser key event to pygame key constant."""
+    key_name = wi.get("key", "")
+    code = wi.get("code", 0)
+    _map = {
+        "Escape": pygame.K_ESCAPE, "F11": pygame.K_F11,
+        "Enter": pygame.K_RETURN, "Backspace": pygame.K_BACKSPACE,
+        "Tab": pygame.K_TAB, " ": pygame.K_SPACE,
+        "1": pygame.K_1, "2": pygame.K_2, "3": pygame.K_3, "4": pygame.K_4,
+        "=": pygame.K_EQUALS, "+": pygame.K_PLUS, "-": pygame.K_MINUS,
+        "ArrowUp": pygame.K_UP, "ArrowDown": pygame.K_DOWN,
+        "ArrowLeft": pygame.K_LEFT, "ArrowRight": pygame.K_RIGHT,
+    }
+    if key_name in _map:
+        return _map[key_name]
+    if len(key_name) == 1:
+        return ord(key_name.lower())
+    return None
+
+
 def main():
+    global RENDER_FPS
+    _web_mode = "--web" in sys.argv
     ensure_assets()
+    if _web_mode:
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    if _web_mode:
+        screen = pygame.display.set_mode((1, 1))
+    else:
+        # Open window at ~90% of the monitor size, maintaining aspect ratio
+        info = pygame.display.Info()
+        mon_w, mon_h = info.current_w, info.current_h
+        win_w = int(mon_w * 0.9)
+        win_h = int(win_w * HEIGHT / WIDTH)
+        if win_h > int(mon_h * 0.9):
+            win_h = int(mon_h * 0.9)
+            win_w = int(win_h * WIDTH / HEIGHT)
+        screen = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
     pygame.display.set_caption("GeoPolitical Domination")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("segoeui,arial,sans", 16 * U)
@@ -693,7 +754,10 @@ def main():
     # State machine
     # ----------------------------------------------------------------
     mode = None          # "local" or "online"
-    state = "main_menu"  # main_menu | local_setup | online_setup | choose_start | playing
+    state = "main_menu"  # main_menu | local_setup | online_setup | choose_start | playing | settings
+    _prev_state = None   # for transition detection
+    _transition_t = 0.0  # transition animation progress (0=none, >0=fading)
+    _transition_dir = 0  # 1=fade in (new state appearing), -1=not used
     message = ""; msg_until = 0
     fullscreen = False
     # Internal render surface — always WIDTH x HEIGHT. Scaled to fit actual screen.
@@ -726,6 +790,10 @@ def main():
     turn_flash_color = None
     flash_start_time = 0
     _last_turn_idx = -1
+    _last_ownership = {}  # {cid: owner_name} — to detect captures
+    _last_troops = {}     # {cid: troop_count} — to detect troop changes
+    # Active visual effects: list of {"type", "x", "y", "t0", "duration", ...}
+    vfx = []
 
     # Tick/render timing
     tick_interval = 1.0 / TPS
@@ -768,6 +836,7 @@ def main():
     expand_send_confirm = None; expand_send_cancel = None
     gather_dialog = False; gather_slider = None
     gather_confirm = None; gather_cancel = None
+    _dialog_anim_t = 0.0  # dialog open animation (0=closed, 1=fully open)
 
     # Main-menu buttons
     btn_local = Button((WIDTH // 2 - 200*U, 190*U, 400*U, 44*U), "Local Game", bigfont, bg=(55, 160, 120))
@@ -804,27 +873,51 @@ def main():
 
     def _screen_to_game(pos):
         """Convert actual screen mouse coords to game-surface coords."""
-        if not fullscreen:
+        real_w, real_h = actual_screen.get_size() if 'actual_screen' in dir() else (WIDTH, HEIGHT)
+        try:
+            real_w, real_h = pygame.display.get_surface().get_size()
+        except Exception:
             return pos
-        real_w, real_h = screen.get_size()
-        scale = min(real_w / WIDTH, real_h / HEIGHT)
-        ow = int(WIDTH * scale); oh = int(HEIGHT * scale)
+        if real_w <= 1 or real_h <= 1:
+            return pos
+        s = min(real_w / WIDTH, real_h / HEIGHT)
+        ow = int(WIDTH * s); oh = int(HEIGHT * s)
         ox = (real_w - ow) // 2; oy = (real_h - oh) // 2
-        gx = (pos[0] - ox) / scale; gy = (pos[1] - oy) / scale
-        return (int(gx), int(gy))
+        gx = (pos[0] - ox) / s; gy = (pos[1] - oy) / s
+        return (int(max(0, min(WIDTH, gx))), int(max(0, min(HEIGHT, gy))))
 
     def flash(msg, secs=2.5):
         nonlocal message, msg_until, flash_start_time
         message = msg; msg_until = time.time() + secs; flash_start_time = time.time()
         print("[UI]", msg)
 
+    _input_hover_key = None  # track which input is hovered
+
     def draw_input_box(key, label, hide_password=False):
-        r = small_input_rects[key]
+        r = small_input_rects.get(key)
+        if not r:
+            return
         active = input_active.get(key, False)
-        bg = (40, 50, 70) if not active else (50, 62, 88)
-        border = (80, 140, 220) if active else HUD_BORDER
+        hovered = _input_hover_key == key
+        if active:
+            bg = (50, 62, 88)
+            border = (80, 160, 255)
+            bw = 3
+        elif hovered:
+            bg = (45, 55, 78)
+            border = (70, 120, 190)
+            bw = 2
+        else:
+            bg = (40, 50, 70)
+            border = HUD_BORDER
+            bw = 2
         pygame.draw.rect(screen, bg, r, border_radius=6*U)
-        pygame.draw.rect(screen, border, r, 2, border_radius=6*U)
+        pygame.draw.rect(screen, border, r, bw, border_radius=6*U)
+        # Active glow
+        if active:
+            glow = pygame.Surface((r.w + 6*U, r.h + 6*U), pygame.SRCALPHA)
+            pygame.draw.rect(glow, (80, 160, 255, 25), (0, 0, r.w + 6*U, r.h + 6*U), border_radius=8*U)
+            screen.blit(glow, (r.x - 3*U, r.y - 3*U))
         txt = user_inputs.get(key, "")
         if hide_password and txt:
             display_txt = "*" * len(txt)
@@ -1170,6 +1263,8 @@ def main():
                 if not getattr(game, "bot_thread", None) or not game.bot_thread.is_alive():
                     def _bot_worker(bp=bot_player):
                         try:
+                            if game is None:
+                                return
                             act = decide_local_bot(game, bp)
                             if not act:
                                 act = ("NOTHING", None)
@@ -1238,22 +1333,51 @@ def main():
                                         attack_country(bp, src, tgt, send, game)
                                     end_turn_housekeeping(game, bp)
                         except Exception as e:
-                            print("bot_worker error:", e)
-                            try:
-                                end_turn_housekeeping(game, bp)
-                            except Exception:
-                                pass
+                            if game is not None:
+                                print("bot_worker error:", e)
+                                try: end_turn_housekeeping(game, bp)
+                                except Exception: pass
                         finally:
-                            game.bot_thread = None
+                            if game is not None:
+                                game.bot_thread = None
 
                     game.bot_thread = threading.Thread(target=_bot_worker, daemon=True)
                     game.bot_thread.start()
 
         # --- event handling ---
+        # Inject web input events into pygame queue
+        if "--web" in sys.argv:
+            import web_serve
+            _web_scale_x = WIDTH / web_serve.WEB_W
+            _web_scale_y = HEIGHT / web_serve.WEB_H
+            for wi in web_serve.get_pending_inputs():
+                try:
+                    wt = wi.get("type", "")
+                    wx = int(wi.get("x", 0) * _web_scale_x)
+                    wy = int(wi.get("y", 0) * _web_scale_y)
+                    if wt == "mousedown":
+                        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(wx, wy), button=wi.get("button", 1)))
+                    elif wt == "mouseup":
+                        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, pos=(wx, wy), button=wi.get("button", 1)))
+                    elif wt == "mousemove":
+                        pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, pos=(wx, wy), rel=(0, 0), buttons=(0, 0, 0)))
+                    elif wt == "wheel":
+                        pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=wi.get("y", 0)))
+                    elif wt == "keydown":
+                        key = _web_keymap(wi)
+                        if key:
+                            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key, unicode=wi.get("key", ""), mod=0))
+                    elif wt == "keyup":
+                        key = _web_keymap(wi)
+                        if key:
+                            pygame.event.post(pygame.event.Event(pygame.KEYUP, key=key, mod=0))
+                except Exception:
+                    pass
+
         for _raw_ev in pygame.event.get():
             # Remap mouse coordinates from screen space to game-surface space
             # We wrap the event so ev.pos always returns game coords
-            if fullscreen and hasattr(_raw_ev, 'pos'):
+            if hasattr(_raw_ev, 'pos'):
                 _mapped_pos = _screen_to_game(_raw_ev.pos)
                 ev = pygame.event.Event(_raw_ev.type, **{**_raw_ev.__dict__, 'pos': _mapped_pos})
             else:
@@ -1276,7 +1400,14 @@ def main():
                     if fullscreen:
                         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
                     else:
-                        screen = pygame.display.set_mode((WIDTH, HEIGHT))
+                        info = pygame.display.Info()
+                        mon_w, mon_h = info.current_w, info.current_h
+                        win_w = int(mon_w * 0.9)
+                        win_h = int(win_w * HEIGHT / WIDTH)
+                        if win_h > int(mon_h * 0.9):
+                            win_h = int(mon_h * 0.9)
+                            win_w = int(win_h * WIDTH / HEIGHT)
+                        screen = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE)
                 elif ev.key == pygame.K_ESCAPE:
                     # Dismiss update error overlay
                     if update_progress and update_progress.get("phase") == "error":
@@ -1453,6 +1584,14 @@ def main():
                     hovered_country = country_at_world_point(wx, wy)
                 else:
                     hovered_country = None
+
+            # Track input box hover
+            if ev.type == pygame.MOUSEMOTION:
+                _input_hover_key = None
+                for k, r in small_input_rects.items():
+                    if r.collidepoint(ev.pos):
+                        _input_hover_key = k
+                        break
 
             # ---- Click into input boxes ----
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
@@ -1776,11 +1915,18 @@ def main():
         cam_y = max(0.0, min(cam_y, max(0.0, MAP_H - vis_h)))
 
         # ================================================================
-        # RENDERING — when fullscreen, draw to game_surf then scale up
+        # RENDERING — always draw to game_surf, then scale to actual screen
         # ================================================================
-        actual_screen = screen  # keep reference to the real display
-        if fullscreen:
-            screen = game_surf  # redirect all rendering to the fixed-size surface
+        actual_screen = screen
+        screen = game_surf
+
+        # Detect state transitions
+        if state != _prev_state:
+            _transition_t = 1.0  # start fade-in
+            _prev_state = state
+        if _transition_t > 0:
+            _transition_t = max(0, _transition_t - dt * 4)  # fade over ~0.25s
+
         screen.fill((14, 18, 30))
         sw = WIDTH; sh = HEIGHT
 
@@ -2086,17 +2232,75 @@ def main():
             if mode == "spectate":
                 screen.blit(cached_render(font, f"+/- speed  Space=toggle  ({spectate_tps} TPS)", TEXT_MUTED), (panel_x + 34*U, 36*U))
 
-            # Turn transition flash effect
+            # --- Detect changes and spawn VFX ---
             cur_tidx = snapshot.get("turn_idx", 0)
+            snap_countries = snapshot.get("countries", {})
+            for cid, rc in snap_countries.items():
+                owner = rc.get("owner")
+                troops = int(rc.get("troops", 0) or 0)
+                old_owner = _last_ownership.get(cid)
+                old_troops = _last_troops.get(cid, 0)
+                c = local_countries.get(cid)
+                if c:
+                    cx, cy = c.get("centroid", (0, 0))
+                    sx = int((cx - cam_x) * cam_scale); sy = int((cy - cam_y) * cam_scale)
+                    # Country captured — bright expanding ring
+                    if owner and owner != old_owner and old_owner is not None:
+                        # Find the capturing player's color
+                        cap_color = (255, 255, 255)
+                        for p in players:
+                            if p.get("name") == owner:
+                                cap_color = p.get("color", (255, 255, 255))
+                                break
+                        vfx.append({"type": "capture", "x": sx, "y": sy, "t0": time.time(), "duration": 0.6, "color": cap_color})
+                    # Troops changed — floating number
+                    if troops != old_troops and old_troops > 0:
+                        diff = troops - old_troops
+                        color = ACCENT_GREEN if diff > 0 else ACCENT_RED
+                        text = f"+{diff}" if diff > 0 else str(diff)
+                        vfx.append({"type": "float_text", "x": sx, "y": sy - 10*U, "t0": time.time(), "duration": 1.0, "text": text, "color": color})
+                _last_ownership[cid] = owner
+                _last_troops[cid] = troops
+
+            # Turn transition flash
             if cur_tidx != _last_turn_idx and _last_turn_idx >= 0:
                 turn_flash_time = time.time()
                 turn_flash_color = cur_color
             _last_turn_idx = cur_tidx
-            if time.time() - turn_flash_time < 0.25 and turn_flash_color:
-                flash_alpha = int(60 * (1.0 - (time.time() - turn_flash_time) / 0.25))
+            if time.time() - turn_flash_time < 0.4 and turn_flash_color:
+                t_prog = (time.time() - turn_flash_time) / 0.4
+                flash_alpha = int(100 * (1.0 - t_prog))
                 flash_surf = pygame.Surface((sw, MAP_H), pygame.SRCALPHA)
                 flash_surf.fill((*turn_flash_color[:3], flash_alpha))
                 screen.blit(flash_surf, (0, 0))
+
+            # --- Render active VFX ---
+            now_t = time.time()
+            new_vfx = []
+            for fx in vfx:
+                age = now_t - fx["t0"]
+                if age > fx["duration"]:
+                    continue  # expired
+                new_vfx.append(fx)
+                prog = age / fx["duration"]  # 0..1
+                if fx["type"] == "capture":
+                    # Expanding ring
+                    r = int(15*U * prog)
+                    a = int(200 * (1.0 - prog))
+                    col = (*fx["color"][:3], a)
+                    pygame.draw.circle(screen, col, (fx["x"], fx["y"]), r, max(1, 3*U - int(2*U * prog)))
+                    # Inner flash
+                    if prog < 0.3:
+                        a2 = int(120 * (1.0 - prog / 0.3))
+                        pygame.draw.circle(screen, (*fx["color"][:3], a2), (fx["x"], fx["y"]), int(8*U * (1 - prog)))
+                elif fx["type"] == "float_text":
+                    # Text floats upward and fades
+                    fy = fx["y"] - int(30*U * prog)
+                    a = int(255 * (1.0 - prog))
+                    txt = cached_render(font, fx["text"], fx["color"])
+                    txt_copy = txt.copy(); txt_copy.set_alpha(a)
+                    screen.blit(txt_copy, (fx["x"] - txt.get_width() // 2, fy))
+            vfx = new_vfx
 
             # Player cards — dynamically sized to fill the HUD bar
             n_players = max(1, len(players))
@@ -2170,11 +2374,22 @@ def main():
                     _log_surf.blit(cached_render(font, l, TEXT_SECONDARY), (8*U, 4*U + i * 18*U))
                 screen.blit(_log_surf, (4*U, MAP_H - log_h - 2*U), (0, 0, log_w, log_h))
 
-            # Dialogs
+            # Dialogs (animated slide-in)
+            any_dialog = gather_dialog or (expand_send_dialog and expand_src)
+            if any_dialog:
+                _dialog_anim_t = min(1.0, _dialog_anim_t + dt * 6)  # open over ~0.17s
+            else:
+                _dialog_anim_t = max(0.0, _dialog_anim_t - dt * 8)
+
             if gather_dialog and gather_slider:
-                _overlay_surf.fill((0, 0, 0, 160)); screen.blit(_overlay_surf, (0, 0))
-                dw, dh = 500*U, 180*U; dx = sw // 2 - dw // 2; dy = sh // 2 - dh // 2
-                draw_shadow_rect(screen, (dx, dy, dw, dh), radius=12*U, offset=6*U, alpha=60)
+                da = _dialog_anim_t
+                ease = 1.0 - (1.0 - da) ** 3  # ease-out cubic
+                overlay_alpha = int(160 * ease)
+                _overlay_surf.fill((0, 0, 0, overlay_alpha)); screen.blit(_overlay_surf, (0, 0))
+                dw, dh = 500*U, 180*U
+                dx = sw // 2 - dw // 2
+                dy = int(sh // 2 - dh // 2 + 40*U * (1.0 - ease))  # slide up
+                draw_shadow_rect(screen, (dx, dy, dw, dh), radius=12*U, offset=6*U, alpha=int(60*ease))
                 pygame.draw.rect(screen, HUD_BG_ACCENT, (dx, dy, dw, dh), border_radius=12*U)
                 pygame.draw.rect(screen, HUD_BORDER, (dx, dy, dw, dh), 1, border_radius=12*U)
                 screen.blit(cached_render(bigfont, "Gather Troops", TEXT_PRIMARY), (dx + 16*U, dy + 14*U))
@@ -2183,9 +2398,14 @@ def main():
                 gather_confirm.draw(screen); gather_cancel.draw(screen)
 
             if expand_send_dialog and expand_send_slider and expand_src:
-                _overlay_surf.fill((0, 0, 0, 180)); screen.blit(_overlay_surf, (0, 0))
-                dw, dh = 520*U, 200*U; dx = sw // 2 - dw // 2; dy = sh // 2 - dh // 2
-                draw_shadow_rect(screen, (dx, dy, dw, dh), radius=12*U, offset=6*U, alpha=60)
+                da = _dialog_anim_t
+                ease = 1.0 - (1.0 - da) ** 3
+                overlay_alpha = int(180 * ease)
+                _overlay_surf.fill((0, 0, 0, overlay_alpha)); screen.blit(_overlay_surf, (0, 0))
+                dw, dh = 520*U, 200*U
+                dx = sw // 2 - dw // 2
+                dy = int(sh // 2 - dh // 2 + 40*U * (1.0 - ease))
+                draw_shadow_rect(screen, (dx, dy, dw, dh), radius=12*U, offset=6*U, alpha=int(60*ease))
                 pygame.draw.rect(screen, HUD_BG_ACCENT, (dx, dy, dw, dh), border_radius=12*U)
                 pygame.draw.rect(screen, HUD_BORDER, (dx, dy, dw, dh), 1, border_radius=12*U)
                 screen.blit(cached_render(bigfont, "Send Troops", TEXT_PRIMARY), (dx + 16*U, dy + 14*U))
@@ -2224,22 +2444,42 @@ def main():
             ms = msg_surf.copy(); ms.set_alpha(alpha)
             screen.blit(ms, (mx + 12*U, my + 7*U))
 
-        # If fullscreen, scale game_surf onto the actual display, then restore screen
-        if fullscreen:
-            screen = actual_screen
-            real_w, real_h = screen.get_size()
-            scale = min(real_w / WIDTH, real_h / HEIGHT)
-            ow = int(WIDTH * scale); oh = int(HEIGHT * scale)
+        # ---- State transition overlay (fade from black) ----
+        if _transition_t > 0.01:
+            trans_alpha = int(200 * _transition_t)
+            trans_surf = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            trans_surf.fill((14, 18, 30, trans_alpha))
+            screen.blit(trans_surf, (0, 0))
+
+        # Scale game_surf to fill the actual display
+        screen = actual_screen
+        real_w, real_h = screen.get_size()
+        if real_w > 1 and real_h > 1:  # skip for dummy display in web mode
+            s = min(real_w / WIDTH, real_h / HEIGHT)
+            ow = int(WIDTH * s); oh = int(HEIGHT * s)
             ox = (real_w - ow) // 2; oy = (real_h - oh) // 2
-            screen.fill((0, 0, 0))  # letterbox bars
+            if ox > 0 or oy > 0:
+                screen.fill((0, 0, 0))  # letterbox bars
             scaled = pygame.transform.scale(game_surf, (ow, oh))
             screen.blit(scaled, (ox, oy))
 
         pygame.display.flip()
+
+        # Push frame to web server if running in --web mode
+        if "--web" in sys.argv:
+            import web_serve
+            web_serve.set_frame(game_surf, pygame)
+
         clock.tick(RENDER_FPS)
 
     pygame.quit()
 
 
 if __name__ == "__main__":
+    if "--web" in sys.argv:
+        # Web mode: stream to browser instead of (or alongside) native window
+        import web_serve
+        web_serve.start_server(port=1232)
+        print("[Web] Open http://localhost:1232 in your browser")
+        print("[Web] Press Ctrl+C to stop")
     main()

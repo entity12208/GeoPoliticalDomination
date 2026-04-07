@@ -29,6 +29,7 @@ Thumbs.db
 backup_before_update/
 temp_update.zip
 play.sh
+play.bat
 
 # Build / dist
 *.egg-info/

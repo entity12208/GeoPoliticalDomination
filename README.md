@@ -4,11 +4,11 @@ A turn-based strategy game where you compete to conquer the world. Build armies,
 
 ## Install
 
+### Linux / macOS / Chromebook
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/entity12208/GeoPoliticalDomination/main/setup.sh | bash
 ```
-
-That's it. The script downloads the latest release, installs Python/SDL2 if needed, creates a virtual environment, and installs dependencies. Works on Ubuntu/Debian, Fedora, Arch, macOS, and Chromebook.
 
 Then play:
 ```bash
@@ -16,26 +16,43 @@ cd ~/GeoPoliticalDomination
 ./play.sh
 ```
 
-### Custom install location
-
+Custom install location:
 ```bash
 GPD_INSTALL_DIR=/opt/gpd curl -fsSL https://raw.githubusercontent.com/entity12208/GeoPoliticalDomination/main/setup.sh | bash
-```
-
-### Manual setup (if you prefer)
-
-```bash
-git clone https://github.com/entity12208/GeoPoliticalDomination.git
-cd GeoPoliticalDomination
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 client.py
 ```
 
 On Debian/Ubuntu/Chromebook you may also need SDL2:
 ```bash
 sudo apt install -y libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
+```
+
+### Windows
+
+**Requires [Python 3.8+](https://www.python.org/downloads/)** — check "Add Python to PATH" during installation.
+
+Open PowerShell and run:
+```powershell
+irm https://raw.githubusercontent.com/entity12208/GeoPoliticalDomination/main/setup.bat -OutFile setup.bat; .\setup.bat
+```
+
+Then play:
+```powershell
+cd $env:USERPROFILE\GeoPoliticalDomination
+.\play.bat
+```
+
+Or just double-click `play.bat` in the install folder.
+
+### Manual setup (any OS)
+
+```bash
+git clone https://github.com/entity12208/GeoPoliticalDomination.git
+cd GeoPoliticalDomination
+python3 -m venv .venv
+source .venv/bin/activate   # Linux/Mac
+# .venv\Scripts\activate    # Windows
+pip install -r requirements.txt
+python3 client.py
 ```
 
 ## Game Modes
