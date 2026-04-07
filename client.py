@@ -56,8 +56,9 @@ GEOJSON_CACHE = os.path.join(ASSET_DIR, "countries.geojson")
 
 WIDTH, HEIGHT = 2560, 1440
 MAP_H = HEIGHT - 280
-FPS = 30
-U = 2  # UI scale factor (all UI pixel dimensions multiplied by this)
+RENDER_FPS = 60     # visual frame rate (user-changeable: 60/120/240)
+TPS = 10            # game logic ticks per second (bot turns, network checks)
+U = 2               # UI scale factor
 
 CLAIM_COST = 200
 TROOP_COST = 50
@@ -712,11 +713,25 @@ def main():
     game_id_in_progress = None
     player_name_in_progress = None
 
-    # Updater state (online mode)
+    # Updater state
     update_info = None
     update_check_done = False
     update_btn = None
     dismiss_btn = None
+    update_progress = None
+    update_thread = None
+
+    # Animation state
+    turn_flash_time = 0
+    turn_flash_color = None
+    flash_start_time = 0
+    _last_turn_idx = -1
+
+    # Tick/render timing
+    tick_interval = 1.0 / TPS
+    tick_accum = 0.0
+    last_time = time.time()
+    spectate_tps = TPS  # adjustable in spectate mode
 
     # Input fields -- all fields for both modes; only relevant ones shown per state
     input_active = {
@@ -727,14 +742,23 @@ def main():
         "player_name": "Player", "starting_country": "", "move_target": "",
         "game_id": "room1", "player_password": "", "room_password": "",
     }
-    small_input_rects = {
-        "player_name": pygame.Rect(WIDTH // 2 - 260*U, 350*U, 520*U, 36*U),
-        "starting_country": pygame.Rect(WIDTH // 2 - 260*U, 420*U, 520*U, 36*U),
-        "move_target": pygame.Rect(WIDTH // 2 - 260*U, MAP_H + 8*U + 120*U, 520*U, 28*U),
-        "game_id": pygame.Rect(WIDTH // 2 - 260*U, 160*U, 520*U, 36*U),
-        "player_password": pygame.Rect(WIDTH // 2 - 260*U, 260*U, 520*U, 36*U),
-        "room_password": pygame.Rect(WIDTH // 2 - 260*U, 310*U, 520*U, 36*U),
-    }
+    def layout_inputs(st):
+        cx = WIDTH // 2 - 260*U; w = 520*U; h = 36*U
+        rects = {}
+        if st == "online_setup":
+            rects["game_id"] = pygame.Rect(cx, 160*U, w, h)
+            rects["player_name"] = pygame.Rect(cx, 216*U, w, h)
+            rects["player_password"] = pygame.Rect(cx, 272*U, w, h)
+            rects["room_password"] = pygame.Rect(cx, 328*U, w, h)
+        elif st == "local_setup":
+            rects["player_name"] = pygame.Rect(cx, 200*U, w, h)
+        elif st in ("choose_start",):
+            rects["starting_country"] = pygame.Rect(cx, 420*U, w, h)
+        if st == "playing":
+            rects["move_target"] = pygame.Rect(cx, MAP_H + 8*U + 120*U, w, 28*U)
+            rects["starting_country"] = pygame.Rect(cx, MAP_H + 8*U + 120*U, w, 28*U)
+        return rects
+    small_input_rects = layout_inputs(state)
 
     # Game-play state
     selected_country = None   # int cid or None
@@ -746,10 +770,17 @@ def main():
     gather_confirm = None; gather_cancel = None
 
     # Main-menu buttons
-    btn_local = Button((WIDTH // 2 - 200*U, 200*U, 400*U, 48*U), "Local Game", bigfont, bg=(55, 160, 120))
-    btn_spectate = Button((WIDTH // 2 - 200*U, 260*U, 400*U, 48*U), "Spectate Bots", bigfont, bg=(180, 140, 50))
-    btn_online = Button((WIDTH // 2 - 200*U, 320*U, 400*U, 48*U), "Online Game", bigfont, bg=(55, 130, 210))
-    btn_quit_main = Button((WIDTH // 2 - 200*U, 380*U, 400*U, 48*U), "Quit", bigfont, bg=(160, 60, 60))
+    btn_local = Button((WIDTH // 2 - 200*U, 190*U, 400*U, 44*U), "Local Game", bigfont, bg=(55, 160, 120))
+    btn_spectate = Button((WIDTH // 2 - 200*U, 244*U, 400*U, 44*U), "Spectate Bots", bigfont, bg=(180, 140, 50))
+    btn_online = Button((WIDTH // 2 - 200*U, 298*U, 400*U, 44*U), "Online Game", bigfont, bg=(55, 130, 210))
+    btn_settings = Button((WIDTH // 2 - 200*U, 352*U, 400*U, 44*U), "Settings", bigfont, bg=(80, 80, 110))
+    btn_quit_main = Button((WIDTH // 2 - 200*U, 406*U, 400*U, 44*U), "Quit", bigfont, bg=(160, 60, 60))
+
+    # Settings menu buttons
+    btn_fps_60 = Button((WIDTH // 2 - 300*U, 260*U, 180*U, 44*U), "60 FPS", bigfont, bg=(55, 130, 210))
+    btn_fps_120 = Button((WIDTH // 2 - 60*U, 260*U, 180*U, 44*U), "120 FPS", bigfont, bg=(55, 130, 210))
+    btn_fps_240 = Button((WIDTH // 2 + 180*U, 260*U, 180*U, 44*U), "240 FPS", bigfont, bg=(55, 130, 210))
+    btn_settings_back = Button((WIDTH // 2 - 100*U, 500*U, 200*U, 48*U), "Back", bigfont, bg=(100, 100, 120))
 
     # Local setup buttons
     bot_slider = Slider((WIDTH // 2 - 200*U, 380*U, 400*U, 36*U), 0, 6, 2)
@@ -762,10 +793,10 @@ def main():
     # Playing action buttons (will be used for both modes)
     buttons_y = MAP_H + 8*U + 78*U + 12*U
     btn_w = 170*U; btn_h = 38*U; gap = 10*U; ax = 8*U; ay = buttons_y
-    b_peace = Button((ax, ay, btn_w, btn_h), "Peace", font, bg=(50, 170, 110))
-    b_expand = Button((ax + btn_w + gap, ay, btn_w, btn_h), "Expand", font, bg=(55, 130, 210))
-    b_gather = Button((ax + 2 * (btn_w + gap), ay, btn_w, btn_h), "Gather Troops", font, bg=(200, 150, 40))
-    b_nothing = Button((ax + 3 * (btn_w + gap), ay, btn_w, btn_h), "Do Nothing", font, bg=(150, 60, 60))
+    b_peace = Button((ax, ay, btn_w, btn_h), "[1] Peace", font, bg=(50, 170, 110))
+    b_expand = Button((ax + btn_w + gap, ay, btn_w, btn_h), "[2] Expand", font, bg=(55, 130, 210))
+    b_gather = Button((ax + 2 * (btn_w + gap), ay, btn_w, btn_h), "[3] Gather", font, bg=(200, 150, 40))
+    b_nothing = Button((ax + 3 * (btn_w + gap), ay, btn_w, btn_h), "[4] Nothing", font, bg=(150, 60, 60))
 
     # ----------------------------------------------------------------
     # Helper closures
@@ -783,8 +814,8 @@ def main():
         return (int(gx), int(gy))
 
     def flash(msg, secs=2.5):
-        nonlocal message, msg_until
-        message = msg; msg_until = time.time() + secs
+        nonlocal message, msg_until, flash_start_time
+        message = msg; msg_until = time.time() + secs; flash_start_time = time.time()
         print("[UI]", msg)
 
     def draw_input_box(key, label, hide_password=False):
@@ -1092,6 +1123,22 @@ def main():
     running = True
 
     while running:
+        # --- Auto-restart after update ---
+        if update_progress and update_progress.get("phase") == "done":
+            time.sleep(1.5)
+            pygame.quit()
+            os.execv(sys.executable, [sys.executable, os.path.join(BASE_DIR, "client.py")])
+
+        # --- Tick/render timing ---
+        now = time.time()
+        dt = min(now - last_time, 0.1)
+        last_time = now
+        cur_tps = spectate_tps if mode == "spectate" else TPS
+        tick_interval = 1.0 / max(1, cur_tps)
+
+        # Update input layout for current state
+        small_input_rects = layout_inputs(state)
+
         # --- network result check (online mode) ---
         if mode == "online" and network_loading and network_thread and not network_thread.is_alive():
             network_loading = False
@@ -1231,9 +1278,22 @@ def main():
                     else:
                         screen = pygame.display.set_mode((WIDTH, HEIGHT))
                 elif ev.key == pygame.K_ESCAPE:
-                    if state == "main_menu":
+                    # Dismiss update error overlay
+                    if update_progress and update_progress.get("phase") == "error":
+                        update_progress = None
+                    # Cancel open dialogs before leaving state
+                    elif state == "playing" and gather_dialog:
+                        gather_dialog = False; gather_slider = None
+                        gather_confirm = None; gather_cancel = None
+                    elif state == "playing" and expand_send_dialog:
+                        expand_send_dialog = False; expand_src = None
+                        expand_send_slider = None; expand_send_confirm = None; expand_send_cancel = None
+                    elif state == "playing" and expand_mode:
+                        expand_mode = None; expand_src = None
+                        flash("Expand cancelled")
+                    elif state == "main_menu":
                         running = False
-                    elif state in ("local_setup", "online_setup", "spectate_setup"):
+                    elif state in ("local_setup", "online_setup", "spectate_setup", "settings"):
                         state = "main_menu"; mode = None
                         flash("Returned to main menu")
                     elif state == "choose_start":
@@ -1246,6 +1306,38 @@ def main():
                         state = "main_menu"; game = None; mode = None
                         flash("Returning to main menu")
                 else:
+                    # Action keybinds (1-4) when no text input is active
+                    any_input_active = any(input_active.values())
+                    if state == "playing" and mode != "spectate" and not any_input_active and not gather_dialog and not expand_send_dialog:
+                        if ev.key == pygame.K_1:
+                            # Peace
+                            do_action("PEACE", {})
+                            continue
+                        elif ev.key == pygame.K_2:
+                            # Expand — start source selection
+                            expand_mode = "source"
+                            flash("Click your source country")
+                            continue
+                        elif ev.key == pygame.K_3:
+                            # Gather — open dialog (same as button click)
+                            pass  # handled by button click logic below
+                        elif ev.key == pygame.K_4:
+                            # Nothing
+                            do_action("NOTHING", {})
+                            continue
+
+                    # Spectate speed control: +/- keys
+                    if state == "playing" and mode == "spectate":
+                        if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                            spectate_tps = min(120, spectate_tps + 5)
+                            flash(f"Speed: {spectate_tps} TPS")
+                        elif ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                            spectate_tps = max(2, spectate_tps - 5)
+                            flash(f"Speed: {spectate_tps} TPS")
+                        elif ev.key == pygame.K_SPACE:
+                            spectate_tps = TPS if spectate_tps != TPS else 60
+                            flash(f"Speed: {'Normal' if spectate_tps == TPS else 'Fast'}")
+
                     # Centralized typing handler
                     handle_key_input(ev)
 
@@ -1377,15 +1469,13 @@ def main():
 
             # ---- MAIN MENU ----
             if state == "main_menu":
-                btn_local.handle_event(ev)
-                btn_spectate.handle_event(ev)
-                btn_online.handle_event(ev)
+                btn_local.handle_event(ev); btn_spectate.handle_event(ev)
+                btn_online.handle_event(ev); btn_settings.handle_event(ev)
                 btn_quit_main.handle_event(ev)
                 if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                     if btn_local.rect.collidepoint(ev.pos):
                         state = "local_setup"; mode = "local"
-                        for kk in input_active:
-                            input_active[kk] = False
+                        for kk in input_active: input_active[kk] = False
                         input_active["player_name"] = True
                     elif btn_spectate.rect.collidepoint(ev.pos):
                         state = "spectate_setup"; mode = "spectate"
@@ -1393,15 +1483,28 @@ def main():
                         mode = "online"
                         if fc is None:
                             ok = init_online()
-                            if not ok:
-                                mode = None
-                                continue
+                            if not ok: mode = None; continue
                         state = "online_setup"
-                        for kk in input_active:
-                            input_active[kk] = False
+                        for kk in input_active: input_active[kk] = False
                         input_active["game_id"] = True
+                    elif btn_settings.rect.collidepoint(ev.pos):
+                        state = "settings"
                     elif btn_quit_main.rect.collidepoint(ev.pos):
                         running = False
+
+            # ---- SETTINGS ----
+            elif state == "settings":
+                btn_fps_60.handle_event(ev); btn_fps_120.handle_event(ev)
+                btn_fps_240.handle_event(ev); btn_settings_back.handle_event(ev)
+                if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                    if btn_fps_60.rect.collidepoint(ev.pos):
+                        RENDER_FPS = 60; flash("Set to 60 FPS")
+                    elif btn_fps_120.rect.collidepoint(ev.pos):
+                        RENDER_FPS = 120; flash("Set to 120 FPS")
+                    elif btn_fps_240.rect.collidepoint(ev.pos):
+                        RENDER_FPS = 240; flash("Set to 240 FPS")
+                    elif btn_settings_back.rect.collidepoint(ev.pos):
+                        state = "main_menu"
 
             # ---- SPECTATE SETUP ----
             elif state == "spectate_setup":
@@ -1659,10 +1762,11 @@ def main():
                         else:
                             selected_country = None
 
-        # ---- Camera smoothing ----
-        cam_scale += (cam_target_scale - cam_scale) * 0.30
-        cam_x += (cam_target_x - cam_x) * 0.30
-        cam_y += (cam_target_y - cam_y) * 0.30
+        # ---- Camera smoothing (framerate-independent) ----
+        lerp = min(1.0, 1.0 - (0.7 ** (dt * 30)))  # equivalent to 0.30 at 30fps
+        cam_scale += (cam_target_scale - cam_scale) * lerp
+        cam_x += (cam_target_x - cam_x) * lerp
+        cam_y += (cam_target_y - cam_y) * lerp
 
         # Clamp camera
         screen_w = WIDTH; screen_h = HEIGHT
@@ -1782,14 +1886,15 @@ def main():
                     base_r = max(6, int(ARMY_PIN_RADIUS * PIN_SCALE * cam_scale))
                     bonus = min(4, troops // 5)
                     r = base_r + bonus
-                    pygame.draw.circle(screen, (0, 0, 0), (sx + 1, sy + 2), r + 2)
+                    so = max(1, U)  # shadow offset scales with U
+                    pygame.draw.circle(screen, (0, 0, 0), (sx + so, sy + so*2), r + 2)
                     pygame.draw.circle(screen, (255, 255, 255), (sx, sy), r + 1)
                     pygame.draw.circle(screen, color, (sx, sy), r)
                     label = str(troops)
                     t = cached_render(pinfont, label, (255, 255, 255))
                     ts = cached_render(pinfont, label, (0, 0, 0))
                     tx = sx - t.get_width() // 2; ty = sy - t.get_height() // 2
-                    screen.blit(ts, (tx + 1, ty + 1))
+                    screen.blit(ts, (tx + so, ty + so))
                     screen.blit(t, (tx, ty))
 
         # ---- HUD background ----
@@ -1809,9 +1914,35 @@ def main():
             sub = cached_render(font, "A Strategy Game of World Conquest", TEXT_SECONDARY)
             screen.blit(sub, (sw // 2 - sub.get_width() // 2, 135*U))
             btn_local.draw(screen); btn_spectate.draw(screen)
-            btn_online.draw(screen); btn_quit_main.draw(screen)
-            note = cached_render(font, "F11 fullscreen  |  Right-drag to pan  |  Scroll to zoom", TEXT_MUTED)
-            screen.blit(note, (WIDTH // 2 - note.get_width() // 2, 440*U))
+            btn_online.draw(screen); btn_settings.draw(screen); btn_quit_main.draw(screen)
+            note = cached_render(font, "F11 fullscreen  |  Right-drag pan  |  Scroll zoom  |  1-4 actions  |  Esc cancel", TEXT_MUTED)
+            screen.blit(note, (WIDTH // 2 - note.get_width() // 2, 460*U))
+
+        elif state == "settings":
+            title_shadow = cached_render(titlefont, "Settings", (20, 60, 120))
+            title_main = cached_render(titlefont, "Settings", TEXT_PRIMARY)
+            tcx = sw // 2 - title_main.get_width() // 2
+            screen.blit(title_shadow, (tcx + 2*U, 82*U))
+            screen.blit(title_main, (tcx, 80*U))
+            # FPS selector
+            screen.blit(cached_render(bigfont, "Render FPS", TEXT_SECONDARY), (sw // 2 - 80*U, 220*U))
+            btn_fps_60.draw(screen); btn_fps_120.draw(screen); btn_fps_240.draw(screen)
+            # Highlight active FPS
+            active_btn = {60: btn_fps_60, 120: btn_fps_120, 240: btn_fps_240}.get(RENDER_FPS)
+            if active_btn:
+                pygame.draw.rect(screen, ACCENT_GOLD, active_btn.rect, 3, border_radius=10*U)
+            screen.blit(cached_render(font, f"Current: {RENDER_FPS} FPS", TEXT_MUTED), (sw // 2 - 60*U, 316*U))
+            # Keybinds reference
+            screen.blit(cached_render(bigfont, "Keybinds", TEXT_SECONDARY), (sw // 2 - 60*U, 360*U))
+            keybinds = [
+                "1 = Peace    2 = Expand    3 = Gather    4 = Nothing",
+                "F11 = Fullscreen    Esc = Back / Cancel dialog",
+                "Right-drag = Pan    Scroll = Zoom",
+                "Spectate: +/- = Speed    Space = Toggle fast",
+            ]
+            for i, line in enumerate(keybinds):
+                screen.blit(cached_render(font, line, TEXT_MUTED), (sw // 2 - 280*U, 400*U + i * 24*U))
+            btn_settings_back.draw(screen)
 
         elif state == "spectate_setup":
             title_shadow = cached_render(titlefont, "Spectate Mode", (60, 50, 20))
@@ -1852,7 +1983,6 @@ def main():
             screen.blit(title_main, (tcx, 40*U))
             sub = cached_render(font, "Online Multiplayer", TEXT_SECONDARY)
             screen.blit(sub, (sw // 2 - sub.get_width() // 2, 95*U))
-            small_input_rects["player_name"] = pygame.Rect(WIDTH // 2 - 260*U, 210*U, 520*U, 36*U)
             draw_input_box("game_id", "Game ID:")
             draw_input_box("player_name", "Player Name:")
             draw_input_box("player_password", "Player Password:", hide_password=True)
@@ -1883,7 +2013,24 @@ def main():
                     dismiss_btn = Button((update_rect.x + 160*U, update_rect.y + 48*U, 140*U, 24*U), "Ignore", font, bg=(80, 80, 100))
                 update_btn.draw(screen); dismiss_btn.draw(screen)
 
-            small_input_rects["player_name"] = pygame.Rect(WIDTH // 2 - 260*U, 350*U, 520*U, 36*U)
+            # Update progress overlay
+            if update_progress:
+                _overlay_surf.fill((0, 0, 0, 200)); screen.blit(_overlay_surf, (0, 0))
+                phase = update_progress.get("phase", "")
+                pct = update_progress.get("percent", 0)
+                msg = update_progress.get("message", "")
+                screen.blit(cached_render(bigfont, "Updating...", TEXT_PRIMARY), (sw // 2 - 80*U, sh // 2 - 60*U))
+                screen.blit(cached_render(font, msg, TEXT_SECONDARY), (sw // 2 - 200*U, sh // 2 - 20*U))
+                bar_x = sw // 2 - 200*U; bar_y = sh // 2 + 10*U
+                bar_w = 400*U; bar_h = 20*U
+                pygame.draw.rect(screen, HUD_BORDER, (bar_x, bar_y, bar_w, bar_h), border_radius=6*U)
+                fill_w = int(bar_w * max(0, min(1, pct)))
+                if fill_w > 0:
+                    col = ACCENT_GREEN if phase == "done" else ACCENT_RED if phase == "error" else (55, 160, 220)
+                    pygame.draw.rect(screen, col, (bar_x, bar_y, fill_w, bar_h), border_radius=6*U)
+                screen.blit(cached_render(font, f"{int(pct * 100)}%", TEXT_PRIMARY), (bar_x + bar_w + 10*U, bar_y))
+                if phase == "error":
+                    screen.blit(cached_render(font, "Press Escape to dismiss", TEXT_MUTED), (sw // 2 - 120*U, sh // 2 + 50*U))
 
         elif state == "choose_start":
             _overlay_surf.fill((0, 0, 0, 160)); screen.blit(_overlay_surf, (0, 0))
@@ -1905,24 +2052,51 @@ def main():
             snapshot = get_snapshot()
             players = snapshot["players"]
 
-            # Turn indicator
+            # Turn indicator with turn number
+            turn_num = snapshot.get("turn_number", 1)
             panel_x = sw - 370*U
             draw_shadow_rect(screen, (panel_x, 6*U, 360*U, 48*U), radius=10*U, offset=3*U, alpha=50)
             pygame.draw.rect(screen, HUD_BG_ACCENT, (panel_x, 6*U, 360*U, 48*U), border_radius=10*U)
             pygame.draw.rect(screen, HUD_BORDER, (panel_x, 6*U, 360*U, 48*U), 1, border_radius=10*U)
             cur_name = "..."
             cur_color = (120, 120, 120)
+            is_my_turn_now = False
             if players and 0 <= snapshot["turn_idx"] < len(players):
                 cur_pl = players[snapshot["turn_idx"]]
                 cur_name = cur_pl.get("name", "...")
                 cur_color = cur_pl.get("color", (120, 120, 120))
+                if mode == "online" and cur_name == my_player_name:
+                    is_my_turn_now = True
             pygame.draw.circle(screen, cur_color, (panel_x + 18*U, 30*U), 8*U)
-            if mode == "local":
+            if mode in ("local", "spectate"):
                 is_bot = players[snapshot["turn_idx"]].get("is_bot", False) if players and 0 <= snapshot["turn_idx"] < len(players) else False
-                turn_text = f"{cur_name}'s Turn {'(BOT)' if is_bot else '(YOU)'}"
+                tag = "(BOT)" if is_bot else "(YOU)"
+                turn_text = f"Turn {turn_num} - {cur_name} {tag}"
+            elif mode == "online":
+                tag = "YOUR TURN!" if is_my_turn_now else "waiting..."
+                turn_text = f"Turn {turn_num} - {cur_name}"
             else:
-                turn_text = f"{cur_name}'s Turn"
-            screen.blit(cached_render(bigfont, turn_text, TEXT_PRIMARY), (panel_x + 34*U, 16*U))
+                turn_text = f"Turn {turn_num} - {cur_name}"
+            screen.blit(cached_render(bigfont, turn_text, TEXT_PRIMARY), (panel_x + 34*U, 10*U))
+            # Online: show YOUR TURN / waiting below
+            if mode == "online":
+                tag_color = ACCENT_GOLD if is_my_turn_now else TEXT_MUTED
+                screen.blit(cached_render(font, tag, tag_color), (panel_x + 34*U, 32*U))
+            # Spectate: show speed hint
+            if mode == "spectate":
+                screen.blit(cached_render(font, f"+/- speed  Space=toggle  ({spectate_tps} TPS)", TEXT_MUTED), (panel_x + 34*U, 36*U))
+
+            # Turn transition flash effect
+            cur_tidx = snapshot.get("turn_idx", 0)
+            if cur_tidx != _last_turn_idx and _last_turn_idx >= 0:
+                turn_flash_time = time.time()
+                turn_flash_color = cur_color
+            _last_turn_idx = cur_tidx
+            if time.time() - turn_flash_time < 0.25 and turn_flash_color:
+                flash_alpha = int(60 * (1.0 - (time.time() - turn_flash_time) / 0.25))
+                flash_surf = pygame.Surface((sw, MAP_H), pygame.SRCALPHA)
+                flash_surf.fill((*turn_flash_color[:3], flash_alpha))
+                screen.blit(flash_surf, (0, 0))
 
             # Player cards — dynamically sized to fill the HUD bar
             n_players = max(1, len(players))
@@ -1945,9 +2119,10 @@ def main():
                 pr = pygame.Rect(px, y0, card_w, card_h)
                 pygame.draw.rect(screen, HUD_BG_ACCENT, pr, border_radius=8*U)
                 pl_color = pl.get("color", PALETTE[i % len(PALETTE)])
-                pygame.draw.rect(screen, pl_color, (pr.x, pr.y, 5*U, pr.h), border_radius=3*U)
+                pygame.draw.rect(screen, pl_color, (pr.x, pr.y, 7*U, pr.h), border_radius=4*U)
                 if i == snapshot["turn_idx"]:
-                    pygame.draw.rect(screen, ACCENT_GOLD, pr, 2, border_radius=8*U)
+                    pulse_w = 2 + int(2 * abs(math.sin(time.time() * 3)))
+                    pygame.draw.rect(screen, ACCENT_GOLD, pr, pulse_w, border_radius=8*U)
                 else:
                     pygame.draw.rect(screen, HUD_BORDER, pr, 1, border_radius=8*U)
                 name_lbl = pl.get("name", "?") + (" (BOT)" if pl.get("is_bot") else "")
@@ -1974,7 +2149,8 @@ def main():
                 screen.blit(cached_render(font, f"Continent: {cont}", TEXT_PRIMARY), (pr.x + 12*U, pr.y + 28*U))
                 screen.blit(cached_render(font, f"Owner: {rc.get('owner') or 'Unclaimed'}", TEXT_SECONDARY), (pr.x + 12*U, pr.y + 50*U))
                 screen.blit(cached_render(font, f"Troops: {rc.get('troops', 0)}", TEXT_SECONDARY), (pr.x + 12*U, pr.y + 70*U))
-                screen.blit(cached_render(font, "Type target name to expand.", TEXT_MUTED), (pr.x + 12*U, pr.y + 96*U))
+                if mode != "spectate":
+                    screen.blit(cached_render(font, "Type target name to expand.", TEXT_MUTED), (pr.x + 12*U, pr.y + 96*U))
                 target_key = "move_target" if mode == "online" else "starting_country"
                 inp = small_input_rects.get(target_key)
                 if inp:
@@ -2031,10 +2207,13 @@ def main():
                 expand_send_slider.draw(screen, font)
                 expand_send_confirm.draw(screen); expand_send_cancel.draw(screen)
 
-        # ---- Flash message ----
+        # ---- Flash message (fade-in + fade-out) ----
         if message and time.time() < msg_until:
             remaining = msg_until - time.time()
-            alpha = min(230, int(230 * min(1.0, remaining / 0.4)))
+            elapsed = time.time() - flash_start_time
+            fade_in = min(1.0, elapsed / 0.2)
+            fade_out = min(1.0, remaining / 0.4)
+            alpha = int(230 * min(fade_in, fade_out))
             msg_surf = cached_render(font, message, TEXT_PRIMARY)
             mw = msg_surf.get_width() + 24*U; mh = msg_surf.get_height() + 14*U
             mx = sw // 2 - mw // 2; my = MAP_H + (12 + 78 + 52)*U
@@ -2057,7 +2236,7 @@ def main():
             screen.blit(scaled, (ox, oy))
 
         pygame.display.flip()
-        clock.tick(FPS)
+        clock.tick(RENDER_FPS)
 
     pygame.quit()
 
