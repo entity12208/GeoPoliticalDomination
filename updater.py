@@ -145,7 +145,7 @@ def download_and_extract_release(release, target_dir=None):
         os.makedirs(backup_dir, exist_ok=True)
         
         # Backup important files
-        important_files = ['config.txt', 'gpd_secrets.txt', 'pin_overrides.json', 'version.txt']
+        important_files = ['config.txt', 'version.txt']
         for fname in important_files:
             src = os.path.join(target_dir, fname)
             if os.path.exists(src):

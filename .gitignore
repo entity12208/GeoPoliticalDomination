@@ -1,2 +1,36 @@
-# Created by venv; see https://docs.python.org/3/library/venv.html
-*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets & credentials
+gpd_secrets.txt
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Game artifacts
+backup_before_update/
+temp_update.zip
+play.sh
+
+# Build / dist
+*.egg-info/
+dist/
+build/
