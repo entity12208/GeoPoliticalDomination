@@ -712,13 +712,11 @@ def main():
     game_id_in_progress = None
     player_name_in_progress = None
 
-    # Updater state
+    # Updater state (online mode)
     update_info = None
     update_check_done = False
     update_btn = None
     dismiss_btn = None
-    update_progress = None   # {"phase": str, "percent": float, "message": str} or None
-    update_thread = None
 
     # Input fields -- all fields for both modes; only relevant ones shown per state
     input_active = {
@@ -1059,7 +1057,7 @@ def main():
         return minimal
 
     def init_online():
-        nonlocal fc, remote
+        nonlocal fc, remote, update_info, update_check_done
         if not FIREBASE_AVAILABLE:
             flash("Firebase not available. Cannot use online mode.")
             return False
@@ -1069,6 +1067,23 @@ def main():
             flash(f"Failed to create FirebaseController: {e}")
             return False
         remote = RemoteGameView()
+
+        # Check for updates in background
+        if UPDATER_AVAILABLE:
+            def check_updates_background():
+                nonlocal update_info, update_check_done
+                try:
+                    update_info = updater.silent_check()
+                    update_check_done = True
+                except Exception as e:
+                    print(f"Update check failed: {e}")
+                    update_check_done = True
+            try:
+                threading.Thread(target=check_updates_background, daemon=True).start()
+            except Exception:
+                update_check_done = True
+        else:
+            update_check_done = True
         return True
 
     # ----------------------------------------------------------------
@@ -1076,27 +1091,7 @@ def main():
     # ----------------------------------------------------------------
     running = True
 
-    # --- Check for updates at startup (background) ---
-    if UPDATER_AVAILABLE:
-        def _update_check_bg():
-            nonlocal update_info, update_check_done
-            try:
-                update_info = updater.silent_check()
-            except Exception as e:
-                print(f"Update check failed: {e}")
-            update_check_done = True
-        threading.Thread(target=_update_check_bg, daemon=True).start()
-    else:
-        update_check_done = True
-
     while running:
-        # --- Auto-restart after update ---
-        if update_progress and update_progress.get("phase") == "done":
-            # Wait a moment for the user to see the message, then restart
-            time.sleep(1.5)
-            pygame.quit()
-            os.execv(sys.executable, [sys.executable, os.path.join(BASE_DIR, "client.py")])
-
         # --- network result check (online mode) ---
         if mode == "online" and network_loading and network_thread and not network_thread.is_alive():
             network_loading = False
@@ -1236,10 +1231,6 @@ def main():
                     else:
                         screen = pygame.display.set_mode((WIDTH, HEIGHT))
                 elif ev.key == pygame.K_ESCAPE:
-                    # Dismiss update error overlay
-                    if update_progress and update_progress.get("phase") == "error":
-                        update_progress = None
-                        continue
                     if state == "main_menu":
                         running = False
                     elif state in ("local_setup", "online_setup", "spectate_setup"):
@@ -1411,21 +1402,6 @@ def main():
                         input_active["game_id"] = True
                     elif btn_quit_main.rect.collidepoint(ev.pos):
                         running = False
-                    # Update notification buttons (in-app update)
-                    elif update_btn and update_btn.rect.collidepoint(ev.pos) and not update_progress:
-                        release = update_info.get("release") if update_info else None
-                        if release and UPDATER_AVAILABLE:
-                            update_progress = {"phase": "download", "percent": 0, "message": "Starting..."}
-                            def _do_update():
-                                nonlocal update_progress
-                                def _cb(phase, pct, msg):
-                                    nonlocal update_progress
-                                    update_progress = {"phase": phase, "percent": pct, "message": msg}
-                                updater.download_update_with_callback(release, progress_cb=_cb)
-                            update_thread = threading.Thread(target=_do_update, daemon=True)
-                            update_thread.start()
-                    elif dismiss_btn and dismiss_btn.rect.collidepoint(ev.pos):
-                        update_info = None; update_btn = None; dismiss_btn = None
 
             # ---- SPECTATE SETUP ----
             elif state == "spectate_setup":
@@ -1505,7 +1481,19 @@ def main():
                             network_thread = threading.Thread(target=_join_worker, daemon=True)
                             network_thread.start()
 
-                    pass  # (update buttons handled in main_menu now)
+                    # Update notification buttons
+                    if update_btn and update_btn.rect.collidepoint((mx, my)):
+                        try:
+                            updater_path = os.path.join(BASE_DIR, "updater.py")
+                            if sys.platform == "win32":
+                                subprocess.Popen([sys.executable, updater_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                            else:
+                                subprocess.Popen([sys.executable, updater_path])
+                            flash("Updater launched! Close this window to update.")
+                        except Exception as e:
+                            flash(f"Failed to launch updater: {e}")
+                    elif dismiss_btn and dismiss_btn.rect.collidepoint((mx, my)):
+                        update_info = None; update_btn = None; dismiss_btn = None
 
             # ---- CHOOSE START ----
             elif state == "choose_start":
@@ -1825,44 +1813,6 @@ def main():
             note = cached_render(font, "F11 fullscreen  |  Right-drag to pan  |  Scroll to zoom", TEXT_MUTED)
             screen.blit(note, (WIDTH // 2 - note.get_width() // 2, 440*U))
 
-            # Update notification banner
-            if update_check_done and update_info and update_info.get("update_available") and not update_progress:
-                update_rect = pygame.Rect(WIDTH - 320*U, HEIGHT - 90*U, 310*U, 80*U)
-                pygame.draw.rect(screen, HUD_BG_ACCENT, update_rect, border_radius=10*U)
-                pygame.draw.rect(screen, ACCENT_GOLD, update_rect, 2, border_radius=10*U)
-                screen.blit(cached_render(font, "Update Available!", ACCENT_GOLD), (update_rect.x + 10*U, update_rect.y + 8*U))
-                current_v = update_info.get("current", "unknown")
-                latest_v = update_info.get("latest", "unknown")
-                screen.blit(cached_render(font, f"{current_v} -> {latest_v}", TEXT_SECONDARY), (update_rect.x + 10*U, update_rect.y + 28*U))
-                if update_btn is None:
-                    update_btn = Button((update_rect.x + 10*U, update_rect.y + 48*U, 140*U, 24*U), "Update Now", font, bg=(50, 170, 110))
-                if dismiss_btn is None:
-                    dismiss_btn = Button((update_rect.x + 160*U, update_rect.y + 48*U, 140*U, 24*U), "Ignore", font, bg=(80, 80, 100))
-                update_btn.draw(screen); dismiss_btn.draw(screen)
-
-            # Update progress overlay
-            if update_progress:
-                _overlay_surf.fill((0, 0, 0, 200)); screen.blit(_overlay_surf, (0, 0))
-                phase = update_progress.get("phase", "")
-                pct = update_progress.get("percent", 0)
-                msg = update_progress.get("message", "")
-                # Title
-                screen.blit(cached_render(bigfont, "Updating...", TEXT_PRIMARY), (sw // 2 - 80*U, sh // 2 - 60*U))
-                # Message
-                screen.blit(cached_render(font, msg, TEXT_SECONDARY), (sw // 2 - 200*U, sh // 2 - 20*U))
-                # Progress bar
-                bar_x = sw // 2 - 200*U; bar_y = sh // 2 + 10*U
-                bar_w = 400*U; bar_h = 20*U
-                pygame.draw.rect(screen, HUD_BORDER, (bar_x, bar_y, bar_w, bar_h), border_radius=6*U)
-                fill_w = int(bar_w * max(0, min(1, pct)))
-                if fill_w > 0:
-                    col = ACCENT_GREEN if phase == "done" else ACCENT_RED if phase == "error" else (55, 160, 220)
-                    pygame.draw.rect(screen, col, (bar_x, bar_y, fill_w, bar_h), border_radius=6*U)
-                pct_text = f"{int(pct * 100)}%"
-                screen.blit(cached_render(font, pct_text, TEXT_PRIMARY), (bar_x + bar_w + 10*U, bar_y))
-                if phase == "error":
-                    screen.blit(cached_render(font, "Press Escape to dismiss", TEXT_MUTED), (sw // 2 - 120*U, sh // 2 + 50*U))
-
         elif state == "spectate_setup":
             title_shadow = cached_render(titlefont, "Spectate Mode", (60, 50, 20))
             title_main = cached_render(titlefont, "Spectate Mode", TEXT_PRIMARY)
@@ -1918,6 +1868,20 @@ def main():
                 screen.blit(_overlay_surf, (0, 0))
                 loading_text = cached_render(bigfont, "Connecting...", TEXT_PRIMARY)
                 screen.blit(loading_text, (WIDTH // 2 - loading_text.get_width() // 2, HEIGHT // 2 - loading_text.get_height() // 2))
+
+            if update_check_done and update_info and update_info.get("update_available"):
+                update_rect = pygame.Rect(WIDTH - 320*U, HEIGHT - 90*U, 310*U, 80*U)
+                pygame.draw.rect(screen, HUD_BG_ACCENT, update_rect, border_radius=10*U)
+                pygame.draw.rect(screen, ACCENT_GOLD, update_rect, 2, border_radius=10*U)
+                screen.blit(cached_render(font, "Update Available!", ACCENT_GOLD), (update_rect.x + 10*U, update_rect.y + 8*U))
+                current_v = update_info.get("current", "unknown")
+                latest_v = update_info.get("latest", "unknown")
+                screen.blit(cached_render(font, f"{current_v} -> {latest_v}", TEXT_SECONDARY), (update_rect.x + 10*U, update_rect.y + 28*U))
+                if update_btn is None:
+                    update_btn = Button((update_rect.x + 10*U, update_rect.y + 48*U, 140*U, 24*U), "Update Now", font, bg=(50, 170, 110))
+                if dismiss_btn is None:
+                    dismiss_btn = Button((update_rect.x + 160*U, update_rect.y + 48*U, 140*U, 24*U), "Ignore", font, bg=(80, 80, 100))
+                update_btn.draw(screen); dismiss_btn.draw(screen)
 
             small_input_rects["player_name"] = pygame.Rect(WIDTH // 2 - 260*U, 350*U, 520*U, 36*U)
 
