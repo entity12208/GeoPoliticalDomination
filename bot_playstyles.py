@@ -283,7 +283,7 @@ def score_expansion_candidates(gs, me_name, my_pins, my_money, vulnerable, weigh
     for src in my_pins:
         src_troops = int(src.get("troops", 0) or 0)
         if src_troops < 3:
-            continue  # need at least 3 to send 2 and keep 1
+            continue
 
         for nb, crossing_cost in neighbors_of(gs, src, me_name):
             if nb.get("owner") == me_name:
@@ -298,37 +298,70 @@ def score_expansion_candidates(gs, me_name, my_pins, my_money, vulnerable, weigh
             tgt_cont = nb.get("continent", "") or ""
             is_free = not tgt_owner
             is_vulnerable = tgt_owner in vulnerable
-
-            # --- Optimal send amount ---
             max_send = src_troops - 1
+
+            # --- Smart send amount based on troop advantage ---
             if is_free:
                 send = min(max_send, max(1, src_troops // 4))
             elif is_vulnerable:
-                send = min(max_send, max(2, src_troops // 3))
+                # Guaranteed win — send enough to garrison well
+                send = min(max_send, max(2, src_troops // 2))
             else:
-                desired = max(3, tgt_troops + 2)  # want to garrison well if we win
-                send = min(max_send, desired)
+                # Scale send with advantage: send more when we massively outnumber
+                advantage = src_troops / max(1, tgt_troops + 1)
+                if advantage >= 5:
+                    send = min(max_send, max(3, int(src_troops * 0.7)))  # overwhelming — send 70%
+                elif advantage >= 3:
+                    send = min(max_send, max(3, int(src_troops * 0.5)))  # strong — send 50%
+                elif advantage >= 2:
+                    send = min(max_send, max(3, tgt_troops + 2))         # decent — match + 2
+                else:
+                    send = min(max_send, max(2, tgt_troops + 1))         # risky — minimum viable
                 if send < 2:
                     continue
 
-            # --- Score ---
+            # --- Score: base value ---
             score = 0.0
+            willingness = weights.get("attack_willingness", 0.5)
 
             if is_free:
                 score += 200 + weights.get("free_claim_bonus", 150)
             elif is_vulnerable:
                 score += 300 + weights.get("vuln_bonus", 200)
+                # Extra bonus for hitting weakly defended vulnerable targets
+                score += max(0, 100 - tgt_troops * 20)
             else:
+                # --- Weakness exploitation: heavily reward attacking weak targets ---
+                # The weaker the target relative to our source, the better
+                advantage_ratio = src_troops / max(1, tgt_troops)
+
+                # Base EV of the attack
                 troop_value = send * TROOP_COST
-                ev_win = 100 * 3 + 50
+                ev_win = 100 * 3 + 50  # future PEACE income from new territory
                 ev_attack = p_win * ev_win - (1 - p_win) * (troop_value + total_cost * 0.5)
-                willingness = weights.get("attack_willingness", 0.5)
                 score += ev_attack * willingness
-                # In stalemate (willingness > 1.0), add a flat positive base to overcome EV deficit
+
+                # WEAKNESS BONUS: massively reward attacking underdefended positions
+                if tgt_troops <= 1:
+                    score += 200 * willingness   # nearly undefended — juicy target
+                elif tgt_troops <= 3:
+                    score += 120 * willingness   # lightly defended
+                elif tgt_troops <= 5:
+                    score += 50 * willingness    # moderate
+
+                # ADVANTAGE BONUS: reward having overwhelming force
+                if advantage_ratio >= 5:
+                    score += 150 * willingness  # crushing advantage
+                elif advantage_ratio >= 3:
+                    score += 80 * willingness   # strong advantage
+                elif advantage_ratio >= 2:
+                    score += 30 * willingness   # decent advantage
+
+                # Stalemate boost
                 if willingness > 1.0:
                     score += 120 * (willingness - 1.0)
 
-            # Continent completion bonus (before negative filter)
+            # --- Continent completion bonus ---
             if tgt_cont and cont_state[tgt_cont]["total"] > 0:
                 ci = cont_state[tgt_cont]
                 remaining = ci["total"] - ci["mine"]
@@ -343,14 +376,23 @@ def score_expansion_candidates(gs, me_name, my_pins, my_money, vulnerable, weigh
                     progress = ci["mine"] / ci["total"]
                     score += continent_value(tgt_cont) * progress * 0.3 * weights.get("continent_weight", 1.0)
 
-            # Skip truly bad actions
+            # --- Penalties ---
             if not is_free and not is_vulnerable and score < 0:
                 continue
 
             score -= crossing_cost * weights.get("crossing_penalty", 1.0)
 
-            if not is_free and not is_vulnerable:
-                score -= tgt_troops * 10
+            # Prefer targets where we'd be surrounded by allies after capturing
+            # (easier to hold, harder for enemy to retake)
+            friendly_neighbors = 0
+            enemy_neighbors = 0
+            for nb2, _ in neighbors_of(gs, nb, me_name):
+                if nb2.get("owner") == me_name:
+                    friendly_neighbors += 1
+                elif nb2.get("owner") and nb2.get("owner") != me_name:
+                    enemy_neighbors += 1
+            score += friendly_neighbors * 15   # bonus for each allied neighbor
+            score -= enemy_neighbors * 5       # small penalty for exposed position
 
             candidates.append((score, src["id"], nb["id"], send))
 
