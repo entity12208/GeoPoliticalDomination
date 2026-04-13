@@ -108,10 +108,16 @@ Attacker rolls 1d20, defender rolls 2d20 (takes higher). Attacker wins if strict
 
 | File | Purpose |
 |------|---------|
-| `client.py` | Main game client (local + spectate + online) |
-| `bot_playstyles.py` | Adaptive bot AI |
+| `client.py` | Main game client (local + spectate + online), lobby, spectator mode |
+| `constants.py` | Centralized constants, colors, economy values, bot difficulty presets |
+| `geometry.py` | Mercator projection, polygon math, GeoJSON loading |
+| `models.py` | Player dataclass with host, spectator, and elimination fields |
+| `game_logic.py` | Core game logic (claiming, attacking, turn management, elimination, lobbies) |
+| `ui_components.py` | Reusable UI elements (buttons, sliders, font cache) |
+| `bot_playstyles.py` | Adaptive bot AI with multi-turn planning and configurable difficulty |
 | `heuristic_bot.py` | Bot AI entry point |
 | `firebase_sync.py` | Firebase REST backend (anonymous auth, no secrets needed) |
+| `web_serve.py` | Browser-based game streaming server |
 | `updater.py` | In-game update checker + downloader |
 | `setup.sh` | Installer script (works via curl or locally) |
 

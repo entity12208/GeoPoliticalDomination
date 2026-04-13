@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.pytest_cache/
 
 # Virtual environments
 venv/
@@ -35,3 +36,9 @@ play.bat
 *.egg-info/
 dist/
 build/
+
+# Auth
+.auth_token
+
+# Tests
+tests/

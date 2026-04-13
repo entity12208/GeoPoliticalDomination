@@ -1,18 +1,19 @@
 # web_serve.py
 """
 Lightweight web server that streams the pygame game to a browser.
-No additional dependencies — uses stdlib http.server + raw RGB frames.
+No additional dependencies -- uses stdlib http.server + raw RGB frames.
 
 Usage: python client.py --web
 Opens http://localhost:1232 in your browser to play.
 """
 
-import io
 import json
 import struct
 import threading
-import time
+import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+logger = logging.getLogger(__name__)
 
 # Shared state between game thread and web server
 _frame_lock = threading.Lock()
@@ -30,15 +31,14 @@ def set_frame(pygame_surface, pygame_module):
     """Called from the game loop to update the current frame."""
     global _frame_data, _frame_w, _frame_h
     try:
-        # Downscale to web resolution
         scaled = pygame_module.transform.scale(pygame_surface, (WEB_W, WEB_H))
         raw = pygame_module.image.tobytes(scaled, 'RGB')
         with _frame_lock:
             _frame_data = raw
             _frame_w = WEB_W
             _frame_h = WEB_H
-    except Exception:
-        pass
+    except (pygame_module.error, ValueError, TypeError) as e:
+        logger.debug("Frame capture failed: %s", e)
 
 
 def get_pending_inputs():
@@ -55,11 +55,8 @@ def _rgb_to_bmp(raw_rgb, w, h):
     row_size = (w * 3 + 3) & ~3  # pad to 4 bytes
     pixel_size = row_size * h
     file_size = 54 + pixel_size
-    # BMP file header (14 bytes)
     header = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, 54)
-    # DIB header (40 bytes)
     dib = struct.pack('<IiiHHIIiiII', 40, w, h, 1, 24, 0, pixel_size, 2835, 2835, 0, 0)
-    # Pixel data (flip vertically, BGR order, pad rows)
     rows = []
     for y in range(h - 1, -1, -1):
         offset = y * w * 3
@@ -69,7 +66,6 @@ def _rgb_to_bmp(raw_rgb, w, h):
             row.append(raw_rgb[px + 2])  # B
             row.append(raw_rgb[px + 1])  # G
             row.append(raw_rgb[px])      # R
-        # Pad row
         while len(row) % 4 != 0:
             row.append(0)
         rows.append(bytes(row))
@@ -98,7 +94,6 @@ const ctx = canvas.getContext('2d');
 const status = document.getElementById('status');
 let frames = 0, lastFps = 0, lastCount = Date.now();
 
-// Resize canvas to fill window while preserving aspect ratio
 function resizeCanvas() {
     const vw = window.innerWidth, vh = window.innerHeight;
     const s = Math.min(vw / W, vh / H);
@@ -116,7 +111,6 @@ function canvasCoords(e) {
     };
 }
 
-// Send input to server
 function sendInput(data) {
     fetch('/input', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).catch(()=>{});
 }
@@ -134,7 +128,6 @@ document.addEventListener('keyup', e => {
     sendInput({type:'keyup', key: e.key, code: e.keyCode});
 });
 
-// Frame streaming
 async function streamFrames() {
     while (true) {
         try {
@@ -165,7 +158,7 @@ streamFrames();
 
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # suppress request logs
+        pass  # suppress default request logs
 
     def do_GET(self):
         if self.path == '/' or self.path == '/index.html':
@@ -182,7 +175,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(data)))
                 self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # client disconnected
             else:
                 self.send_response(204)
                 self.end_headers()
@@ -198,8 +194,8 @@ class _Handler(BaseHTTPRequestHandler):
                 evt = json.loads(body)
                 with _input_lock:
                     _input_queue.append(evt)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, ValueError):
+                logger.debug("Invalid input event from browser")
             self.send_response(200)
             self.send_header('Content-Length', '0')
             self.end_headers()
@@ -214,5 +210,5 @@ def start_server(port=1232):
     server.timeout = 0.5
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f"[Web] Server running at http://localhost:{port}")
+    logger.info("Web server running at http://localhost:%d", port)
     return server

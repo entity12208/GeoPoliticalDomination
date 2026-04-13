@@ -3,8 +3,17 @@
 # default_bot_count: default number of bots to create at New Game
 # pin_x_adjust: horizontal adjustment for pin positions
 # pin_scale: scaling factor for map display
+# bot_difficulty: easy / normal / hard
 
 player_name=Player
 default_bot_count=3
 pin_x_adjust=-25
 pin_scale=0.5
+bot_difficulty=normal
+render_fps=240
+resolution=1080p
+music_volume=0.0
+sfx_volume=0.0
+show_chat=1
+show_logs=0
+edge_scroll=1

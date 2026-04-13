@@ -8,11 +8,15 @@ Interface:
     where params for EXPAND is (src_id, tgt_id, send_amount)
 """
 
+import logging
+
 import bot_playstyles
+
+logger = logging.getLogger(__name__)
 
 
 def decide(game_state, player_name):
-    """Main decision function — routes to bot_playstyles."""
+    """Main decision function -- routes to bot_playstyles."""
     return bot_playstyles.decide(game_state, player_name)
 
 
@@ -36,15 +40,11 @@ if __name__ == "__main__":
         ]
     }
 
-    # Test bot1: has 8 troops on A, adjacent to vulnerable bot2 on B and free C
-    # Should prioritize: free claim C or attack vulnerable bot2
     result = decide(sample, "bot1")
     print(f"bot1 decision: {result}")
     print(f"bot1 playstyle: {bot_playstyles.get_playstyle('bot1')}")
 
-    # Test multiple times to see variety
     for i in range(5):
-        bot_playstyles._bot_playstyles.clear()
         r = decide(sample, "bot1")
         ps = bot_playstyles.get_playstyle("bot1")
         print(f"  [{ps}] -> {r}")
