@@ -1,46 +1,43 @@
+export type GameMode = 'classic' | 'tournament' | 'challenge';
+export type MapScope = 'world' | 'europe' | 'asia' | 'africa' | 'north_america' | 'south_america';
+
 export interface Player {
-    name: string;
-    isBot: boolean;
-    color: string;
-    money: number;
-    vulnerable: boolean;
-    wasAttacked: boolean;
-    troopBuyLimit: number;
-    elo?: number;
-    eliminated?: boolean;
-    isSpectator?: boolean;
+  name: string;
+  color: string;
+  money: number;
+  isBot?: boolean;
+  vulnerable?: boolean;
+  eliminated?: boolean;
+  spectator?: boolean;
 }
 
 export interface Country {
-    id: string;
-    owner: string | null;
-    troops: number;
-    continent: string;
-    coordinates: [number, number];
+  id: string;
+  name: string;
+  owner: string | null;
+  troops: number;
+  continent: string;
+  x: number;
+  y: number;
+  color?: string;
 }
 
 export interface GameState {
-    players: Player[];
-    countries: { [key: string]: Country };
-    turnIdx: number;
-    turnNumber: number;
-    logs: string[];
-    status: 'waiting' | 'playing' | 'finished';
-    gameId: string;
-    mode: string;
-    mapScope: string;
-    isPrivate: boolean;
-    joinCode?: string;
-    createdAt: string;
+  gameId: string;
+  players: Player[];
+  countries: Record<string, Country>;
+  turnIdx: number;
+  turnNumber: number;
+  logs: string[];
+  status: 'waiting' | 'playing' | 'finished';
+  mode: GameMode;
+  mapScope: MapScope;
+  joinCode?: string;
+  createdAt: string;
 }
 
 export interface ChatMessage {
-    sender: string;
-    message: string;
-    timestamp: string;
-}
-
-export interface GameAction {
-    type: 'PEACE' | 'EXPAND' | 'GATHER' | 'NOTHING';
-    params: { [key: string]: any };
+  sender: string;
+  message: string;
+  timestamp: string;
 }

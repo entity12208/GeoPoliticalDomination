@@ -2,15 +2,18 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: 'src',
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+  },
   build: {
     outDir: '../dist',
     emptyOutDir: true,
-  },
-  server: {
-    port: 5173,
-    open: true,
-  },
-  preview: {
-    port: 4173,
-  },
+    sourcemap: false,
+    minify: 'esbuild'
+  }
 });
